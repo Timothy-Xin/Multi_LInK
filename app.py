@@ -61,13 +61,13 @@ if not os.path.exists(args.data_folder) or not os.path.exists(os.path.join(args.
 if not os.path.exists(args.embedding_folder) or not os.path.exists(os.path.join(args.embedding_folder, 'embeddings.npy')):
     raise ValueError('The embedding file does not exist please run Download.py to download the embedding file or run Precompute.py to recompute them or provide the correct path.')
 
-emb  = np.load(os.path.join(args.embedding_folder, 'embeddings.npy'))[0:2000000]
+emb  = np.load(os.path.join(args.embedding_folder, 'embeddings_subset.npy'))
 # emb = torch.tensor(emb).float().to(device)
 emb = jax.numpy.array(emb, dtype=jax.numpy.float32)
-As = np.load(os.path.join(args.data_folder, 'connectivity.npy'))[0:2000000]
-x0s = np.load(os.path.join(args.data_folder, 'x0.npy'))[0:2000000]
-node_types = np.load(os.path.join(args.data_folder, 'node_types.npy'))[0:2000000]
-curves = np.load(os.path.join(args.data_folder, 'target_curves.npy'))[0:2000000]
+As = np.load(os.path.join(args.data_folder, 'connectivity_subset.npy'))
+x0s = np.load(os.path.join(args.data_folder, 'x0_subset.npy'))
+node_types = np.load(os.path.join(args.data_folder, 'node_types_subset.npy'))
+curves = np.load(os.path.join(args.data_folder, 'target_curves_subset.npy'))
 sizes = (As.sum(-1)>0).sum(-1)
 alpha = np.load('./TestData/alphabet.npy', allow_pickle=True)
 
@@ -212,4 +212,4 @@ with gr.Blocks(css=css, js=draw_script) as block:
     
     clr_btn.click(lambda x: x, js='document.getElementById("sketch").innerHTML = ""')
     
-block.launch(root_path='/linkage', server_name='10.80.6.47', server_port=args.port,share=True,max_threads=200,inline=False,)
+block.launch(root_path='/linkage',server_name='localhost', server_port=args.port, share=True, max_threads=200, inline=True)
