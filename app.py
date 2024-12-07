@@ -126,8 +126,8 @@ with gr.Blocks(css=css, js=draw_script) as block:
     
     with gr.Row():
         intro = gr.Markdown('''
-        # Multi_LInK: Learning Joint Representations of Design and Performance Spaces through Contrastive Learning for Mechanism Synthesis
-        Multi_LInK is a novel framework that integrates contrastive learning of performance and design space with optimization techniques for solving complex inverse problems in engineering design with discrete and continuous variables. We focus on the path synthesis problem for planar linkage mechanisms in this application.
+        # MTLS（Multi-trajectory Linkage Path Synthesis）: Learning Joint Representations of Design and Performance Spaces through Contrastive Learning for Mechanism Synthesis.
+        MTLS is a novel framework that integrates contrastive learning of performance and design space with optimization techniques for solving complex inverse problems in engineering design with discrete and continuous variables. We focus on the path synthesis problem for planar linkage mechanisms in this application.<br>
         Below, you can draw or upload one or multiple curves and synthesize a mechanism that can trace the curves. You can also adjust the algorithm parameters to see how it affects the solution.
         ''', elem_classes="intro")
 
@@ -143,7 +143,7 @@ with gr.Blocks(css=css, js=draw_script) as block:
             
             btn_submit = gr.Button("Perform Path Synthesis",variant='primary',elem_classes="clr_btn")
             
-            # checkbox
+            # checkboxc
             partial = gr.Checkbox(label="Partial Curve", value=False, elem_id="partial")
 
         with gr.Column(min_width=250,scale=1,visible=True):
