@@ -22,3 +22,11 @@ TestData/*.npy
 *_experimental*
 *_exp_*
 static/*-*.html
+/.idea/.gitignore
+/.gradio/certificate.pem
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/Multi_LInK.iml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/vcs.xml
