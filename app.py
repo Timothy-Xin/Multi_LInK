@@ -48,7 +48,7 @@ if device == 'cpu':
 else:
       with open(os.path.join(args.checkpoint_folder, args.checkpoint_name), 'rb') as f:
         Trainer = pickle.load(f)
-        
+
 Trainer.model_base = Trainer.model_base.to('cpu')
 Trainer.model_mechanism = Trainer.model_mechanism.to('cpu')
 Trainer.model_input.compile()
@@ -88,7 +88,7 @@ for i in range(len(alpha)):
 a = np.copy(alpha[15])
 alpha[15] = alpha[16]
 alpha[16] = a
-   
+
 
 torch.cuda.empty_cache()
 
@@ -96,34 +96,58 @@ def create_synthesizer(n_freq, maximum_joint_count, time_steps, top_n, init_opti
     # mask = (sizes<=maximum_joint_count)
     synthesizer = PathSynthesis(Trainer, curves, As, x0s, node_types, emb, BFGS_max_iter=BFGS_max_iter, n_freq=n_freq, optim_timesteps=time_steps, top_n=top_n, init_optim_iters=init_optim_iters, top_n_level2=top_n_level2)
     return synthesizer
-    
+
+# Function to process the uploaded SVG file
+import json
+
+def process_svg(svg_file):
+    if svg_file is not None:
+        try:
+            # 读取 SVG 文件内容
+            svg_content = svg_file.decode("utf-8")
+            # 转义 SVG 内容中的双引号
+            svg_content_escaped = svg_content.replace('"', '\\"')
+            # 返回一个 JavaScript 函数，用于将 SVG 内容添加到画布中
+            return f"""
+            <script>
+              const svgCanvas = document.getElementById('sketch');
+              svgCanvas.innerHTML = '{svg_content_escaped}';
+            </script>
+            """
+        except Exception as e:
+            # 如果处理文件时出现错误，返回错误信息
+            return f"Error processing SVG file: {str(e)}"
+    else:
+        return "No SVG file uploaded"
+
+
 def make_cad(synth_out, partial, progress=gr.Progress(track_tqdm=True)):
-    
+
     progress(0, desc="Generating 3D Model ...")
-    
+
     f_name = str(uuid.uuid4())
-    
+
     A_M, x0_M, node_types_M, start_theta_M, end_theta_M, tr_M = synth_out[0]
-    
+
     sol_m = solve_rev_vectorized_batch_CPU(A_M[np.newaxis], x0_M[np.newaxis],node_types_M[np.newaxis],np.linspace(start_theta_M, end_theta_M, 200))[0]
     z,status = get_layers(A_M, x0_M, node_types_M,sol_m)
-    
+
     if partial:
         sol_m = np.concatenate([sol_m, sol_m[:,::-1,:]], axis=1)
-    
+
     create_3d_html(A_M, x0_M, node_types_M, z, sol_m, template_path = f'./{args.static_folder}/animation.html', save_path=f'./{args.static_folder}/{f_name}.html')
-    
+
     return gr.HTML(f'<iframe width="100%" height="800px" src="file={args.static_folder}/{f_name}.html"></iframe>',label="3D Plot",elem_classes="plot3d")
 
 gr.set_static_paths(paths=[Path(f'./{args.static_folder}')])
 
 
 with gr.Blocks(css=css, js=draw_script) as block:
-    
+
     syth  = gr.State()
     state = gr.State()
     dictS = gr.State()
-    
+
     with gr.Row():
         intro = gr.Markdown('''
         # MTLS（Multi-trajectory Linkage Path Synthesis）: Learning Joint Representations of Design and Performance Spaces through Contrastive Learning for Mechanism Synthesis.
@@ -134,21 +158,34 @@ with gr.Blocks(css=css, js=draw_script) as block:
     with gr.Row():
 
         with gr.Column(min_width=350,scale=2):
+
+            # Add SVG file upload component
+            svg_upload = gr.File(label="Upload SVG File", type="binary", elem_classes="svg_upload")
+
+            # Add a button to trigger SVG processing
+            svg_process_btn = gr.Button("Process SVG", elem_classes="svg_process_btn")
+            svg_output = gr.HTML(elem_classes="svg_output")
+
             canvas = gr.HTML(draw_html)
+
+            # Event to handle SVG file processing
+            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=svg_output)
 
             # add predefiened curve choices of alphabet
             curve_choices = gr.Radio(["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"],label="Predefined Curves",elem_classes="curve_choices", type='index')
 
             clr_btn = gr.Button("Clear",elem_classes="clr_btn")
-            
+
             btn_submit = gr.Button("Perform Path Synthesis",variant='primary',elem_classes="clr_btn")
-            
+
+
+
             # checkboxc
             partial = gr.Checkbox(label="Partial Curve", value=False, elem_id="partial")
 
         with gr.Column(min_width=250,scale=1,visible=True):
             gr.HTML("<h2>Algorithm Parameters</h2>")
-            
+
             n_freq = gr.Slider(minimum = 3 , maximum = 50, value=7, step=1, label="Number of Frequenceies For smoothing", interactive=True)
             maximum_joint_count = gr.Slider(minimum = 6 , maximum = 20, value=14, step=1, label="Maximum Joint Count", interactive=True)
             time_steps = gr.Slider(minimum = 1000 , maximum = 3000, value=2000, step=500, label="Number of Simulation Time Steps", interactive=True, visible=False)
@@ -158,29 +195,29 @@ with gr.Blocks(css=css, js=draw_script) as block:
             BFGS_max_iter = gr.Slider(minimum = 50 , maximum = 1000, value=200, step=50, label="Iterations For Final Optimization", interactive=True)
 
             storage = gr.HTML('<textarea id="json_text" style="display:none;"></textarea>')
-        
+
     with gr.Row():
         with gr.Row():
             with gr.Column(min_width=250,scale=1,visible=True):
                 gr.HTML('<h2>Algorithm Outputs</h2>')
                 progl = gr.Label({"Progress": 0}, elem_classes="prog",num_top_classes=1)
-                
+
     with gr.Row():
         with gr.Column(min_width=250,visible=True):
             og_plt = gr.Plot(label="Original Input",elem_classes="plotpad")
-        with gr.Column(min_width=250,visible=True):    
+        with gr.Column(min_width=250,visible=True):
             smooth_plt = gr.Plot(label="Smoothed Drawing",elem_classes="plotpad")
-                
+
     with gr.Row():
         candidate_plt = gr.Plot(label="Initial Candidates",elem_classes="plotpad")
-    
+
     with gr.Row():
         mechanism_plot = gr.Plot(label="Solution",elem_classes="plotpad")
-        
+
 
     with gr.Row():
         plot_3d = gr.HTML('<iframe width="100%" height="800px" src="file=static/filler.html"></iframe>',label="3D Plot",elem_classes="plot3d")
-    
+
     event1 = btn_submit.click(lambda: [None]*4 + [gr.update(interactive=False)]*8, outputs=[candidate_plt,mechanism_plot,og_plt,smooth_plt,btn_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], concurrency_limit=10)
     event2 = event1.then(create_synthesizer, inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], outputs=[syth], concurrency_limit=10)
     event3 = event2.then(lambda s,x,p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1,2]) * [[1,-1]],partial=p), inputs=[syth,canvas,partial],js="(s,x,p) => [s,path.toString(),p]",outputs=[state,og_plt,smooth_plt], concurrency_limit=10)
@@ -188,18 +225,18 @@ with gr.Blocks(css=css, js=draw_script) as block:
     event5 = event4.then(lambda sy,s: sy.demo_sythesize_step_3(s,progress=gr.Progress()), inputs=[syth,state], outputs=[mechanism_plot,state,progl], concurrency_limit=10)
     event6 = event5.then(make_cad, inputs=[state,partial], outputs=[plot_3d], concurrency_limit=10)
     event8 = event6.then(lambda: [gr.update(interactive=True)]*8, outputs=[btn_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], concurrency_limit=10)
-    
+
 
     def aux(state):
         # Pass the state value to the JS function
         return gr.HTML(f'<textarea id="json_text" style="display:none;">{state}</textarea>')
-        
+
     e1 = curve_choices.change(lambda idx: (partials[idx], str((80*(alpha[idx][None])[0]+350//2).tolist())), outputs=[partial,dictS], inputs=[curve_choices])
     e2 = e1.then(aux, inputs=[dictS], outputs=[storage])
     e3 = e2.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
-    
+
     block.load()
-    
+
     clr_btn.click(lambda x: x, js='document.getElementById("sketch").innerHTML = ""')
-    
+
 block.launch(root_path='/linkage',server_name='localhost', server_port=args.port, share=True, max_threads=200, inline=True)
