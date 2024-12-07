@@ -126,19 +126,9 @@ with gr.Blocks(css=css, js=draw_script) as block:
     
     with gr.Row():
         intro = gr.Markdown('''
-        # LInK: Learning Joint Representations of Design and Performance Spaces through Contrastive Learning for Mechanism Synthesis
-        LInK is a novel framework that integrates contrastive learning of performance and design space with optimization techniques for solving complex inverse problems in engineering design with discrete and continuous variables. We focus on the path synthesis problem for planar linkage mechanisms in this application.
-
-        [<img src="https://github.com/user-attachments/assets/7e6790c7-fbbe-4658-96f7-25aad304c59d" style="width:100%; max-width:1000px;"/>](https://ahn1376-linkalphabetdemo.hf.space/)
-
-        If you want to see the alphabet solutions, please visit look at the simple demo we have on huggingface:
-        [Simple Fun Alphabet Demo](https://ahn1376-linkalphabetdemo.hf.space/)
-
-        Code & Data: [GitHub](https://github.com/ahnobari/LInK/)
-
-        Paper (Currently Under Review): [arXiv](https://arxiv.org/abs/2405.20592)
-
-        Below you can draw a curve and synthesize a mechanism that can trace the curve. You can also adjust the algorithm parameters to see how it affects the solution.
+        # Multi_LInK: Learning Joint Representations of Design and Performance Spaces through Contrastive Learning for Mechanism Synthesis
+        Multi_LInK is a novel framework that integrates contrastive learning of performance and design space with optimization techniques for solving complex inverse problems in engineering design with discrete and continuous variables. We focus on the path synthesis problem for planar linkage mechanisms in this application.
+        Below, you can draw or upload one or multiple curves and synthesize a mechanism that can trace the curves. You can also adjust the algorithm parameters to see how it affects the solution.
         ''', elem_classes="intro")
 
     with gr.Row():
