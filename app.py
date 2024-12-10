@@ -108,12 +108,14 @@ def process_svg(svg_file):
             # 转义 SVG 内容中的双引号
             svg_content_escaped = svg_content.replace('"', '\\"')
             # 返回一个 JavaScript 函数，用于将 SVG 内容添加到画布中
-            return f"""
+            svg_content_script = f"""
             <script>
               const svgCanvas = document.getElementById('sketch');
               svgCanvas.innerHTML = '{svg_content_escaped}';
             </script>
             """
+            process_svg_content = draw_html + svg_content_script
+            return process_svg_content
         except Exception as e:
             # 如果处理文件时出现错误，返回错误信息
             return f"Error processing SVG file: {str(e)}"
