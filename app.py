@@ -105,17 +105,7 @@ def process_svg(svg_file):
         try:
             # 读取 SVG 文件内容
             svg_content = svg_file.decode("utf-8")
-            # 转义 SVG 内容中的双引号
-            svg_content_escaped = svg_content.replace('"', '\\"')
-            # 返回一个 JavaScript 函数，用于将 SVG 内容添加到画布中
-            svg_content_script = f"""
-            <script>
-              const svgCanvas = document.getElementById('sketch');
-              svgCanvas.innerHTML = '{svg_content_escaped}';
-            </script>
-            """
-            process_svg_content = draw_html + svg_content_script
-            return process_svg_content
+            return gr.HTML(svg_content)
         except Exception as e:
             # 如果处理文件时出现错误，返回错误信息
             return f"Error processing SVG file: {str(e)}"
@@ -171,7 +161,7 @@ with gr.Blocks(css=css, js=draw_script) as block:
             canvas = gr.HTML(draw_html)
 
             # Event to handle SVG file processing
-            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=canvas)
+            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=svg_output)
 
             # add predefiened curve choices of alphabet
             curve_choices = gr.Radio(["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"],label="Predefined Curves",elem_classes="curve_choices", type='index')
