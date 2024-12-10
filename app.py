@@ -171,7 +171,7 @@ with gr.Blocks(css=css, js=draw_script) as block:
             canvas = gr.HTML(draw_html)
 
             # Event to handle SVG file processing
-            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=svg_output)
+            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=canvas)
 
             # add predefiened curve choices of alphabet
             curve_choices = gr.Radio(["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"],label="Predefined Curves",elem_classes="curve_choices", type='index')
