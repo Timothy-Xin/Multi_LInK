@@ -97,22 +97,6 @@ def create_synthesizer(n_freq, maximum_joint_count, time_steps, top_n, init_opti
     synthesizer = PathSynthesis(Trainer, curves, As, x0s, node_types, emb, BFGS_max_iter=BFGS_max_iter, n_freq=n_freq, optim_timesteps=time_steps, top_n=top_n, init_optim_iters=init_optim_iters, top_n_level2=top_n_level2)
     return synthesizer
 
-# Function to process the uploaded SVG file
-import json
-
-def process_svg(svg_file):
-    if svg_file is not None:
-        try:
-            # 读取 SVG 文件内容
-            svg_content = svg_file.decode("utf-8")
-            return gr.HTML(svg_content)
-        except Exception as e:
-            # 如果处理文件时出现错误，返回错误信息
-            return f"Error processing SVG file: {str(e)}"
-    else:
-        return "No SVG file uploaded"
-
-
 def make_cad(synth_out, partial, progress=gr.Progress(track_tqdm=True)):
 
     progress(0, desc="Generating 3D Model ...")
@@ -150,27 +134,24 @@ with gr.Blocks(css=css, js=draw_script) as block:
     with gr.Row():
 
         with gr.Column(min_width=350,scale=2):
-
-            # Add SVG file upload component
-            svg_upload = gr.File(label="Upload SVG File", type="binary", elem_classes="svg_upload")
-
-            # Add a button to trigger SVG processing
-            svg_process_btn = gr.Button("Process SVG", elem_classes="svg_process_btn")
-            svg_output = gr.HTML(elem_classes="svg_output")
-
             canvas = gr.HTML(draw_html)
 
-            # Event to handle SVG file processing
-            svg_process_btn.click(process_svg, inputs=svg_upload, outputs=svg_output)
+            # 选择曲线来源（上传文件或预定义曲线）
+            curve_source = gr.Radio(
+                choices=["Upload Curve File", "Choose Predefined Curve"],
+                label="Select Curve Source",
+                type="index"
+            )
+
+            # 上传文件按钮，用于上传.np文件
+            upload_file = gr.File(label="Upload Curve File (npy)", visible=False)
 
             # add predefiened curve choices of alphabet
-            curve_choices = gr.Radio(["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"],label="Predefined Curves",elem_classes="curve_choices", type='index')
+            curve_choices = gr.Radio(["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"],label="Predefined Curves",elem_classes="curve_choices", type='index', visible=False)
 
             clr_btn = gr.Button("Clear",elem_classes="clr_btn")
 
             btn_submit = gr.Button("Perform Path Synthesis",variant='primary',elem_classes="clr_btn")
-
-
 
             # checkboxc
             partial = gr.Checkbox(label="Partial Curve", value=False, elem_id="partial")
@@ -210,6 +191,43 @@ with gr.Blocks(css=css, js=draw_script) as block:
     with gr.Row():
         plot_3d = gr.HTML('<iframe width="100%" height="800px" src="file=static/filler.html"></iframe>',label="3D Plot",elem_classes="plot3d")
 
+
+    # 处理上传的文件
+    def handle_upload(file):
+        try:
+            # 读取上传的 .npy 文件
+            curve_data = np.load(file.name)
+            # 解析并绘制曲线
+            curve_upload = preprocess_curves(curve_data[0:1])[0]  # 直接处理整个 curve_data，因为只有一条曲线
+            partial_upload = True
+            t = np.linalg.norm(curve_upload[0] - curve_upload[1])
+            e = np.linalg.norm(curve_upload[0] - curve_upload[-1])
+            if e / t <= 1.1:
+                partial_upload = False
+            partials_upload = [partial_upload]
+
+            # rotate curve 180 degrees
+            R = np.array([[-1, 0], [0, 1]]) @ np.array([[-1, 0], [0, -1]])
+            curve_data[0] = np.dot(R, curve_data[0].T).T
+
+            curve_data = str((80 * (curve_data[0][None])[0] + 350 // 2).tolist())
+
+            return partials_upload,curve_data
+        except Exception as e:
+            raise ValueError(f"Failed to load .npy file: {e}")
+
+
+    # 切换曲线来源的显示
+    def toggle_curve_source(choice):
+        if choice == 0:  # 上传文件
+            return gr.update(visible=True), gr.update(visible=False)
+        elif choice == 1:  # 预定义曲线
+            return gr.update(visible=False), gr.update(visible=True)
+
+
+    # 切换曲线来源
+    curve_source.change(toggle_curve_source, inputs=[curve_source], outputs=[upload_file, curve_choices])
+
     event1 = btn_submit.click(lambda: [None]*4 + [gr.update(interactive=False)]*8, outputs=[candidate_plt,mechanism_plot,og_plt,smooth_plt,btn_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], concurrency_limit=10)
     event2 = event1.then(create_synthesizer, inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], outputs=[syth], concurrency_limit=10)
     event3 = event2.then(lambda s,x,p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1,2]) * [[1,-1]],partial=p), inputs=[syth,canvas,partial],js="(s,x,p) => [s,path.toString(),p]",outputs=[state,og_plt,smooth_plt], concurrency_limit=10)
@@ -218,12 +236,15 @@ with gr.Blocks(css=css, js=draw_script) as block:
     event6 = event5.then(make_cad, inputs=[state,partial], outputs=[plot_3d], concurrency_limit=10)
     event8 = event6.then(lambda: [gr.update(interactive=True)]*8, outputs=[btn_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2, BFGS_max_iter], concurrency_limit=10)
 
-
     def aux(state):
         # Pass the state value to the JS function
         return gr.HTML(f'<textarea id="json_text" style="display:none;">{state}</textarea>')
 
-    e1 = curve_choices.change(lambda idx: (partials[idx], str((80*(alpha[idx][None])[0]+350//2).tolist())), outputs=[partial,dictS], inputs=[curve_choices])
+    e1_upload = upload_file.change(handle_upload, inputs=[upload_file], outputs=[partial, dictS])
+    e2_upload = e1_upload.then(aux, inputs=[dictS], outputs=[storage])
+    e3_upload = e2_upload.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
+
+    e1 = curve_choices.change(lambda idx: (partials[idx], str((80*(alpha[idx][None])[0]+350//2).tolist())), outputs=[partial, dictS], inputs=[curve_choices])
     e2 = e1.then(aux, inputs=[dictS], outputs=[storage])
     e3 = e2.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
 

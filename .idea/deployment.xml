@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" serverName="rtx4090@47.116.56.122:18889 password" remoteFilesAllowedToDisappearOnAutoupload="false" confirmBeforeUploading="false">
+    <option name="confirmBeforeUploading" value="false" />
     <serverData>
       <paths name="pi@192.168.1.101:22 password">
         <serverdata>
@@ -20,6 +21,13 @@
         <serverdata>
           <mappings>
             <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="rtx4090@47.116.56.122:18889 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/rtx4090/XuYaoxin/LInK_2070" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
