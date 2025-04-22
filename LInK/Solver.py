@@ -72,6 +72,7 @@ def get_order(A, motor = [0,1], fixed_nodes=[0, 1]):
     else:
         raise Exception("Non Dyadic or Dof larger than 1")
 
+# 根据运动学求解的顺序对机械机构的节点进行排序
 def sort_mechanism(A, x0, motor = [0,1], fixed_nodes=[0, 1]):
     '''
     This function sorts the mechanism based on the solution path.
@@ -159,6 +160,7 @@ def solve_rev_vectorized_batch_CPU(As,x0s,node_types,thetas):
         
         x += x_k
     return x
+
 
 def solve_rev_vectorized_batch_jax(As,x0s,node_types,thetas):
     
