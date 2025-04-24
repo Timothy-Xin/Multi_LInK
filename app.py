@@ -166,7 +166,7 @@ with gr.Blocks(css=css, js=draw_script) as block:
 
             # 选择曲线来源（上传文件或预定义曲线）
             curve_source = gr.Radio(
-                choices=["Upload Single Curve File", "Upload Multi-Curve File(n<=3)", "Choose Predefined Curve"],
+                choices=["Upload Single Curve File", "Choose Predefined Curve", "Upload Multi-Curve File(n<=3)"],
                 label="Select Curve Source",
                 type="index"
             )
@@ -174,18 +174,20 @@ with gr.Blocks(css=css, js=draw_script) as block:
             # 单轨迹文件上传组件
             upload_single_file = gr.File(label="Upload Single Curve File (npy)", visible=False)
 
-            # 多轨迹文件上传组件
-            upload_multi_file = gr.File(label="Upload Multi-Curve File (npy)", visible=False)
-
             # add predefiened curve choices of alphabet
             curve_choices = gr.Radio(
                 ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T",
                  "U", "V", "W", "X", "Y", "Z"], label="Predefined Curves", elem_classes="curve_choices", type='index',
                 visible=False)
 
-            clr_btn = gr.Button("Clear", elem_classes="clr_btn")
-
             btn_submit = gr.Button("Perform Path Synthesis", variant='primary', elem_classes="clr_btn")
+
+            # 多轨迹文件上传组件
+            upload_multi_file = gr.File(label="Upload Multi-Curve File (npy)", visible=False)
+
+            btn_multi_submit = gr.Button("Perform Multi-Path Synthesis", variant='primary', elem_classes="clr_btn", visible=False)
+
+            clr_btn = gr.Button("Clear", elem_classes="clr_btn")
 
             # checkboxc
             partial = gr.Checkbox(label="Partial Curve", value=False, elem_id="partial")
@@ -292,12 +294,12 @@ with gr.Blocks(css=css, js=draw_script) as block:
             # === 分别转换 id=0 的曲线字符串 ===
             if len(curves_id_0) == 1:
                 curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
-                return partials_upload, curve_id_0_1_str
+                return partials_upload, curve_id_1_str, curve_id_0_1_str
 
             elif len(curves_id_0) == 2:
                 curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
                 curve_id_0_2_str = convert_to_str_format(curves_id_0[1])
-                return partials_upload, curve_id_0_2_str
+                return partials_upload, curve_id_1_str, curve_id_0_1_str, curve_id_0_2_str
 
             else:
                 raise ValueError("Expected 1 or 2 curves with id=0, but got {}".format(len(curves_id_0)))
@@ -307,18 +309,38 @@ with gr.Blocks(css=css, js=draw_script) as block:
 
 
     # 切换曲线来源的显示
+    # 切换曲线来源的显示
     def toggle_curve_source(choice):
         if choice == 0:  # 上传单轨迹文件
-            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
-        elif choice == 1:  # 上传多轨迹文件
-            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
-        elif choice == 2:  # 预定义曲线
-            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+            return (
+                gr.update(visible=True),  # upload_single_file
+                gr.update(visible=False),  # curve_choices
+                gr.update(visible=False),  # upload_multi_file
+                gr.update(visible=True),  # btn_submit
+                gr.update(visible=False)  # btn_multi_submit
+            )
+        elif choice == 1:  # 预定义曲线
+            return (
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False)
+            )
+        else:  # choice == 2 上传多轨迹文件
+            return (
+                gr.update(visible=False),
+                gr.update(visible=False),
+                gr.update(visible=True),
+                gr.update(visible=False),
+                gr.update(visible=True)
+            )
+
 
     curve_source.change(
         toggle_curve_source,
         inputs=[curve_source],
-        outputs=[upload_single_file, upload_multi_file, curve_choices]
+        outputs=[upload_single_file, curve_choices, upload_multi_file, btn_submit, btn_multi_submit]
     )
 
     # 当用户点击“Perform Path Synthesis”按钮时，禁用一些交互组件以防止重复提交。
@@ -351,8 +373,31 @@ with gr.Blocks(css=css, js=draw_script) as block:
     event6 = event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
 
     # 在event6完成后，恢复之前禁用的交互组件。
-    event8 = event6.then(lambda: [gr.update(interactive=True)] * 8,
+    event7 = event6.then(lambda: [gr.update(interactive=True)] * 8,
                          outputs=[btn_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters,
+                                  top_n_level2, BFGS_max_iter], concurrency_limit=10)
+
+    # 当用户点击“Perform Multi-Path Synthesis”按钮时
+    multi_event1 = btn_multi_submit.click(lambda: [None] * 4 + [gr.update(interactive=False)] * 8,
+                              outputs=[candidate_plt, mechanism_plot, og_plt, smooth_plt, btn_multi_submit, n_freq,
+                                       maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2,
+                                       BFGS_max_iter], concurrency_limit=10)
+    multi_event2 = multi_event1.then(create_synthesizer,
+                         inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2,
+                                 BFGS_max_iter], outputs=[syth], concurrency_limit=10)
+    multi_event3 = multi_event2.then(
+        lambda s, x, p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1, 2]) * [[1, -1]],
+                                                partial=p), inputs=[syth, canvas, partial],
+        js="(s,x,p) => [s,path.toString(),p]", outputs=[state, og_plt, smooth_plt], concurrency_limit=10)
+    multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_sythesize_step_2(s, max_size=mj),
+                         inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
+                         concurrency_limit=10)
+    multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()), inputs=[syth, state],
+                         outputs=[mechanism_plot, state, progl], concurrency_limit=10)
+    multi_event6 = multi_event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
+    # 在event6完成后，恢复之前禁用的交互组件。
+    multi_event7 = multi_event6.then(lambda: [gr.update(interactive=True)] * 8,
+                         outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters,
                                   top_n_level2, BFGS_max_iter], concurrency_limit=10)
 
 
