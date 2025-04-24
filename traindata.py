@@ -21,6 +21,7 @@ x0s = np.load(os.path.join(args.data_folder, 'x0_subset.npy'))
 node_types = np.load(os.path.join(args.data_folder, 'node_types_subset.npy'))
 curves = np.load(os.path.join(args.data_folder, 'target_curves_subset.npy'))
 graphs = np.load(os.path.join(args.data_folder, 'graphs_subset.npy'), allow_pickle=True)
+alpha = np.load('./TestData/alphabet.npy', allow_pickle=True) * 10
 
 # # 查看 emb 数组的数据结构
 # print("emb 数据结构：")
@@ -72,10 +73,19 @@ graphs = np.load(os.path.join(args.data_folder, 'graphs_subset.npy'), allow_pick
 # print("内存占用字节数：", curves.nbytes)
 #
 # 查看 graphs 数组的数据结构
-print("graphs 数据结构：")
-print("形状：", graphs.shape)
-print("数据类型：", graphs.dtype)
-print("维度数：", graphs.ndim)
+# print("graphs 数据结构：")
+# print("形状：", graphs.shape)
+# print("数据类型：", graphs.dtype)
+# print("维度数：", graphs.ndim)
+# print("部分数据内容：")
+# print(graphs)
+# print("内存占用字节数：", graphs.nbytes)
+
+# 查看 alpha 数组的数据结构
+print("alpha 数据结构：")
+print("形状：", alpha.shape)
+print("数据类型：", alpha.dtype)
+print("维度数：", alpha.ndim)
 print("部分数据内容：")
-print(graphs)
-print("内存占用字节数：", graphs.nbytes)
+print(alpha)
+print("内存占用字节数：", alpha.nbytes)

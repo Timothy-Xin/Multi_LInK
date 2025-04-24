@@ -235,20 +235,20 @@ def apply_transforms(curves, translations, scales, rotations):
 
 # 对曲线进行标准化预处理，包括均匀采样、中心化、缩放标准化和方向对齐。
 def preprocess_curves(curves, n=200):
-    # equidistant sampling (Remove Timing)
+    # equidistant sampling (Remove Timing) 均匀化采样
     curves = uniformize(curves, n)
 
-    # center curves
+    # center curves 中心化曲线
     curves = curves - curves.mean(1)[:, None]
 
-    # apply uniform scaling
+    # apply uniform scaling 统一缩放
     s = jax.numpy.sqrt(jax.numpy.square(curves).sum(-1).sum(-1) / n)[:, None, None]
     curves = curves / s
 
-    # find the furthest point on the curve
+    # find the furthest point on the curve 找到曲线上的最远点
     max_idx = jax.numpy.square(curves).sum(-1).argmax(axis=1)
 
-    # rotate curves so that the furthest point is horizontal
+    # rotate curves so that the furthest point is horizontal 旋转曲线
     theta = -jax.numpy.arctan2(curves[jax.numpy.arange(curves.shape[0]), max_idx, 1],
                                curves[jax.numpy.arange(curves.shape[0]), max_idx, 0])
 
@@ -261,6 +261,32 @@ def preprocess_curves(curves, n=200):
     curves = jax.numpy.transpose(jax.numpy.matmul(R, jax.numpy.transpose(curves, (0, 2, 1))), (0, 2, 1))
 
     return curves
+
+def preprocess_multi_curves_as_whole(curves):
+    n_curve, n_points, _ = curves.shape
+    all_points = curves.reshape(-1, 2)  # (n_curve * n_points, 2)
+
+    # center
+    all_points -= all_points.mean(0)
+
+    # scale
+    s = jax.numpy.sqrt(jax.numpy.square(all_points).sum() / all_points.shape[0])
+    all_points /= s
+
+    # find furthest point
+    dists = jax.numpy.square(all_points).sum(-1)
+    max_idx = dists.argmax()
+    furthest = all_points[max_idx]
+
+    # rotate
+    theta = -jax.numpy.arctan2(furthest[1], furthest[0])
+    R = jax.numpy.array([
+        [jax.numpy.cos(theta), -jax.numpy.sin(theta)],
+        [jax.numpy.sin(theta),  jax.numpy.cos(theta)],
+    ])
+    all_points = jax.numpy.dot(all_points, R.T)
+
+    return all_points.reshape(n_curve, n_points, 2)
 
 
 @jax.jit

@@ -22,6 +22,7 @@ from LInK.Solver import solve_rev_vectorized_batch_CPU
 from LInK.CAD import get_layers, create_3d_html
 from LInK.OptimJax import PathSynthesis
 from LInK.OptimJax import preprocess_curves
+from LInK.OptimJax import preprocess_multi_curves_as_whole
 from pathlib import Path
 import jax
 
@@ -165,13 +166,16 @@ with gr.Blocks(css=css, js=draw_script) as block:
 
             # 选择曲线来源（上传文件或预定义曲线）
             curve_source = gr.Radio(
-                choices=["Upload Curve File", "Choose Predefined Curve"],
+                choices=["Upload Single Curve File", "Upload Multi-Curve File(n<=3)", "Choose Predefined Curve"],
                 label="Select Curve Source",
                 type="index"
             )
 
-            # 上传文件按钮，用于上传.np文件
-            upload_file = gr.File(label="Upload Curve File (npy)", visible=False)
+            # 单轨迹文件上传组件
+            upload_single_file = gr.File(label="Upload Single Curve File (npy)", visible=False)
+
+            # 多轨迹文件上传组件
+            upload_multi_file = gr.File(label="Upload Multi-Curve File (npy)", visible=False)
 
             # add predefiened curve choices of alphabet
             curve_choices = gr.Radio(
@@ -229,8 +233,8 @@ with gr.Blocks(css=css, js=draw_script) as block:
                           label="3D Plot", elem_classes="plot3d")
 
 
-    # 处理上传的文件
-    def handle_upload(file):
+    # 处理单轨迹文件上传
+    def handle_single_upload(file):
         try:
             # 读取上传的 .npy 文件
             curve_data = np.load(file.name)
@@ -254,16 +258,68 @@ with gr.Blocks(css=css, js=draw_script) as block:
             raise ValueError(f"Failed to load .npy file: {e}")
 
 
+    # 处理多轨迹文件上传
+    def handle_multi_upload(file):
+        try:
+            curve_data = np.load(file.name)  # shape (n_curves, 200, 3)
+            coords = curve_data[..., :2]  # (n, 200, 2)
+            ids = curve_data[..., 2]  # (n, 200)
+            ids_per_curve = ids[:, 0]  # 每条曲线的 id（假设每条曲线的所有点 id 相同）
+
+            # === 统一处理所有曲线，保持相对位置 ===
+            processed_coords = preprocess_multi_curves_as_whole(coords)
+
+            # === 分离 id=1 的曲线（应该只有一条） ===
+            curve_id_1 = processed_coords[ids_per_curve == 1][0]
+
+            # === 判断是否为 partial curve ===
+            t = np.linalg.norm(curve_id_1[0] - curve_id_1[1])
+            e = np.linalg.norm(curve_id_1[0] - curve_id_1[-1])
+            partial_curve = e / t > 1.1
+            partials_upload = [partial_curve]
+
+            # === 坐标变换函数 ===
+            def convert_to_str_format(curve):
+                transformed = np.dot(np.array([[1, 0], [0, -1]]), curve.T).T
+                return str((80 * transformed + 350 // 2).tolist())
+
+            # === id=1 的曲线字符串表示 ===
+            curve_id_1_str = convert_to_str_format(curve_id_1)
+
+            # === 提取 id=0 的曲线集合 ===
+            curves_id_0 = processed_coords[ids_per_curve == 0]
+
+            # === 分别转换 id=0 的曲线字符串 ===
+            if len(curves_id_0) == 1:
+                curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
+                return partials_upload, curve_id_0_1_str
+
+            elif len(curves_id_0) == 2:
+                curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
+                curve_id_0_2_str = convert_to_str_format(curves_id_0[1])
+                return partials_upload, curve_id_0_2_str
+
+            else:
+                raise ValueError("Expected 1 or 2 curves with id=0, but got {}".format(len(curves_id_0)))
+
+        except Exception as e:
+            raise ValueError(f"Failed to load multi-curve .npy file: {e}")
+
+
     # 切换曲线来源的显示
     def toggle_curve_source(choice):
-        if choice == 0:  # 上传文件
-            return gr.update(visible=True), gr.update(visible=False)
-        elif choice == 1:  # 预定义曲线
-            return gr.update(visible=False), gr.update(visible=True)
+        if choice == 0:  # 上传单轨迹文件
+            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+        elif choice == 1:  # 上传多轨迹文件
+            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+        elif choice == 2:  # 预定义曲线
+            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
 
-
-    # 切换曲线来源
-    curve_source.change(toggle_curve_source, inputs=[curve_source], outputs=[upload_file, curve_choices])
+    curve_source.change(
+        toggle_curve_source,
+        inputs=[curve_source],
+        outputs=[upload_single_file, upload_multi_file, curve_choices]
+    )
 
     # 当用户点击“Perform Path Synthesis”按钮时，禁用一些交互组件以防止重复提交。
     event1 = btn_submit.click(lambda: [None] * 4 + [gr.update(interactive=False)] * 8,
@@ -306,11 +362,26 @@ with gr.Blocks(css=css, js=draw_script) as block:
         return gr.HTML(f'<textarea id="json_text" style="display:none;">{state}</textarea>')
 
 
-    # 处理用户上传的曲线文件。
-    e1_upload = upload_file.change(handle_upload, inputs=[upload_file], outputs=[partial, dictS])
-    e2_upload = e1_upload.then(aux, inputs=[dictS], outputs=[storage])
-    e3_upload = e2_upload.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
+    # 绑定单轨迹文件上传事件
+    e1_single_upload = upload_single_file.change(
+        handle_single_upload,
+        inputs=[upload_single_file],
+        outputs=[partial, dictS]
+    )
+    e2_single_upload = e1_single_upload.then(aux, inputs=[dictS], outputs=[storage])
+    e3_single_upload = e2_single_upload.then(None,
+                                             js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
 
+    # 绑定多轨迹文件上传事件
+    e1_multi_upload = upload_multi_file.change(
+        handle_multi_upload,
+        inputs=[upload_multi_file],
+        outputs=[partial, dictS]
+    )
+    e2_multi_upload = e1_multi_upload.then(aux, inputs=[dictS], outputs=[storage])
+    e3_multi_upload = e2_multi_upload.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
+
+    # 绑定选择轨迹事件
     e1 = curve_choices.change(lambda idx: (partials[idx], str((80 * (alpha[idx][None])[0] + 350 // 2).tolist())),
                               outputs=[partial, dictS], inputs=[curve_choices])
     e2 = e1.then(aux, inputs=[dictS], outputs=[storage])
