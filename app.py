@@ -29,6 +29,7 @@ import jax
 import numpy as np
 import pickle
 import torch
+import json
 
 # turn off gradient computation
 torch.set_grad_enabled(False)
@@ -185,7 +186,8 @@ with gr.Blocks(css=css, js=draw_script) as block:
             # 多轨迹文件上传组件
             upload_multi_file = gr.File(label="Upload Multi-Curve File (npy)", visible=False)
 
-            btn_multi_submit = gr.Button("Perform Multi-Path Synthesis", variant='primary', elem_classes="clr_btn", visible=False)
+            btn_multi_submit = gr.Button("Perform Multi-Path Synthesis", variant='primary', elem_classes="clr_btn",
+                                         visible=False)
 
             clr_btn = gr.Button("Clear", elem_classes="clr_btn")
 
@@ -292,23 +294,17 @@ with gr.Blocks(css=css, js=draw_script) as block:
             curves_id_0 = processed_coords[ids_per_curve == 0]
 
             # === 分别转换 id=0 的曲线字符串 ===
-            if len(curves_id_0) == 1:
-                curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
-                return partials_upload, curve_id_1_str, curve_id_0_1_str
+            curve_id_0_strs = [convert_to_str_format(c) for c in curves_id_0]
 
-            elif len(curves_id_0) == 2:
-                curve_id_0_1_str = convert_to_str_format(curves_id_0[0])
-                curve_id_0_2_str = convert_to_str_format(curves_id_0[1])
-                return partials_upload, curve_id_1_str, curve_id_0_1_str, curve_id_0_2_str
+            # === 将所有曲线都打包成字符串列表 ===
+            all_curve_strs = [curve_id_1_str] + curve_id_0_strs
 
-            else:
-                raise ValueError("Expected 1 or 2 curves with id=0, but got {}".format(len(curves_id_0)))
+            return partials_upload, json.dumps([json.loads(s) for s in all_curve_strs])
 
         except Exception as e:
             raise ValueError(f"Failed to load multi-curve .npy file: {e}")
 
 
-    # 切换曲线来源的显示
     # 切换曲线来源的显示
     def toggle_curve_source(choice):
         if choice == 0:  # 上传单轨迹文件
@@ -379,26 +375,30 @@ with gr.Blocks(css=css, js=draw_script) as block:
 
     # 当用户点击“Perform Multi-Path Synthesis”按钮时
     multi_event1 = btn_multi_submit.click(lambda: [None] * 4 + [gr.update(interactive=False)] * 8,
-                              outputs=[candidate_plt, mechanism_plot, og_plt, smooth_plt, btn_multi_submit, n_freq,
-                                       maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2,
-                                       BFGS_max_iter], concurrency_limit=10)
+                                          outputs=[candidate_plt, mechanism_plot, og_plt, smooth_plt, btn_multi_submit,
+                                                   n_freq,
+                                                   maximum_joint_count, time_steps, top_n, init_optim_iters,
+                                                   top_n_level2,
+                                                   BFGS_max_iter], concurrency_limit=10)
     multi_event2 = multi_event1.then(create_synthesizer,
-                         inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2,
-                                 BFGS_max_iter], outputs=[syth], concurrency_limit=10)
+                                     inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters,
+                                             top_n_level2,
+                                             BFGS_max_iter], outputs=[syth], concurrency_limit=10)
     multi_event3 = multi_event2.then(
         lambda s, x, p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1, 2]) * [[1, -1]],
                                                 partial=p), inputs=[syth, canvas, partial],
         js="(s,x,p) => [s,path.toString(),p]", outputs=[state, og_plt, smooth_plt], concurrency_limit=10)
     multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_sythesize_step_2(s, max_size=mj),
-                         inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
-                         concurrency_limit=10)
-    multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()), inputs=[syth, state],
-                         outputs=[mechanism_plot, state, progl], concurrency_limit=10)
+                                     inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
+                                     concurrency_limit=10)
+    multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()),
+                                     inputs=[syth, state],
+                                     outputs=[mechanism_plot, state, progl], concurrency_limit=10)
     multi_event6 = multi_event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
-    # 在event6完成后，恢复之前禁用的交互组件。
     multi_event7 = multi_event6.then(lambda: [gr.update(interactive=True)] * 8,
-                         outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters,
-                                  top_n_level2, BFGS_max_iter], concurrency_limit=10)
+                                     outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n,
+                                              init_optim_iters,
+                                              top_n_level2, BFGS_max_iter], concurrency_limit=10)
 
 
     # 将状态值传递给JavaScript函数。
@@ -424,7 +424,7 @@ with gr.Blocks(css=css, js=draw_script) as block:
         outputs=[partial, dictS]
     )
     e2_multi_upload = e1_multi_upload.then(aux, inputs=[dictS], outputs=[storage])
-    e3_multi_upload = e2_multi_upload.then(None, js='pre_defined_curve(document.getElementById("json_text").innerHTML)')
+    e3_multi_upload = e2_multi_upload.then(None, js='pre_multi_defined_curve(document.getElementById("json_text").innerHTML)')
 
     # 绑定选择轨迹事件
     e1 = curve_choices.change(lambda idx: (partials[idx], str((80 * (alpha[idx][None])[0] + 350 // 2).tolist())),
