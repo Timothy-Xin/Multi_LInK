@@ -349,7 +349,6 @@ with gr.Blocks(css=css, js=draw_script) as block:
     event2 = event1.then(create_synthesizer,
                          inputs=[n_freq, maximum_joint_count, time_steps, top_n, init_optim_iters, top_n_level2,
                                  BFGS_max_iter], outputs=[syth], concurrency_limit=10)
-
     # 在event2完成后，调用demo_sythesize_step_1方法进行第一步合成。
     event3 = event2.then(
         lambda s, x, p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1, 2]) * [[1, -1]],
@@ -385,21 +384,29 @@ with gr.Blocks(css=css, js=draw_script) as block:
                                              top_n_level2,
                                              BFGS_max_iter], outputs=[syth], concurrency_limit=10)
     multi_event3 = multi_event2.then(
-        lambda s, x, p: s.demo_sythesize_step_1(np.array([eval(i) for i in x.split(',')]).reshape([-1, 2]) * [[1, -1]],
-                                                partial=p), inputs=[syth, canvas, partial],
-        js="(s,x,p) => [s,path.toString(),p]", outputs=[state, og_plt, smooth_plt], concurrency_limit=10)
-    multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_sythesize_step_2(s, max_size=mj),
-                                     inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
-                                     concurrency_limit=10)
-    multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()),
-                                     inputs=[syth, state],
-                                     outputs=[mechanism_plot, state, progl], concurrency_limit=10)
-    multi_event6 = multi_event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
-    multi_event7 = multi_event6.then(lambda: [gr.update(interactive=True)] * 8,
-                                     outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n,
-                                              init_optim_iters,
-                                              top_n_level2, BFGS_max_iter], concurrency_limit=10)
+        lambda s, x, p: s.demo_multi_sythesize_step_1(
+            np.array([eval(i) for i in x.split(',')]).reshape([-1, 200, 2]) * [1, -1],
+            partial=p), inputs=[syth, canvas, partial],
+        js="""
+                (s, x, p) => {
+                    const flat = path.toString();  // 转换成字符串
+                    return [s, flat, p];  // 返回后续的值
+                }
+            """,
+        outputs=[state, og_plt, smooth_plt], concurrency_limit=10)
 
+
+    # multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_sythesize_step_2(s, max_size=mj),
+    #                                  inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
+    #                                  concurrency_limit=10)
+    # multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()),
+    #                                  inputs=[syth, state],
+    #                                  outputs=[mechanism_plot, state, progl], concurrency_limit=10)
+    # multi_event6 = multi_event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
+    # multi_event7 = multi_event6.then(lambda: [gr.update(interactive=True)] * 8,
+    #                                  outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n,
+    #                                           init_optim_iters,
+    #                                           top_n_level2, BFGS_max_iter], concurrency_limit=10)
 
     # 将状态值传递给JavaScript函数。
     def aux(state):
@@ -424,7 +431,8 @@ with gr.Blocks(css=css, js=draw_script) as block:
         outputs=[partial, dictS]
     )
     e2_multi_upload = e1_multi_upload.then(aux, inputs=[dictS], outputs=[storage])
-    e3_multi_upload = e2_multi_upload.then(None, js='pre_multi_defined_curve(document.getElementById("json_text").innerHTML)')
+    e3_multi_upload = e2_multi_upload.then(None,
+                                           js='pre_multi_defined_curve(document.getElementById("json_text").innerHTML)')
 
     # 绑定选择轨迹事件
     e1 = curve_choices.change(lambda idx: (partials[idx], str((80 * (alpha[idx][None])[0] + 350 // 2).tolist())),

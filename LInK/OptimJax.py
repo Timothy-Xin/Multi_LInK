@@ -886,6 +886,88 @@ class PathSynthesis:
 
         return payload, fig1, fig2
 
+    def demo_multi_sythesize_step_1(self, target_curve, partial=False):
+        torch.cuda.empty_cache()
+        start_time = time.time()
+
+        target_curve = preprocess_curves(target_curve[None], self.curve_size)[0]
+
+        og_scale = get_scales(target_curve[None])[0]
+
+        size = target_curve.shape[0]
+        if partial:
+            # fit an ellipse that passes through the first and last point and is centered at the mean of the curve
+            center = (target_curve[-1] + target_curve[0]) / 2
+            start_point = target_curve[-1]
+            end_point = target_curve[0]
+            a = jax.numpy.linalg.norm(start_point - center)
+            b = jax.numpy.linalg.norm(end_point - center)
+            start_angle = jax.numpy.arctan2(start_point[1] - center[1], start_point[0] - center[0])
+            end_angle = jax.numpy.arctan2(end_point[1] - center[1], end_point[0] - center[0])
+
+            angles = jax.numpy.linspace(start_angle, end_angle, self.curve_size)
+            ellipse = jax.numpy.stack([center[0] + a * jax.numpy.cos(angles), center[1] + b * jax.numpy.sin(angles)], 1)
+
+            angles = jax.numpy.linspace(start_angle + 2 * np.pi, end_angle, self.curve_size)
+            ellipse_2 = jax.numpy.stack([center[0] + a * jax.numpy.cos(angles), center[1] + b * jax.numpy.sin(angles)],
+                                        1)
+
+            # ellipse 1 length
+            l_1 = jax.numpy.linalg.norm(ellipse - target_curve.mean(0), axis=-1).sum()
+            # ellipse 2 length
+            l_2 = jax.numpy.linalg.norm(ellipse_2 - target_curve.mean(0), axis=-1).sum()
+
+            if l_1 > l_2:
+                target_curve = jax.numpy.concatenate([target_curve, ellipse], 0)
+            else:
+                target_curve = jax.numpy.concatenate([target_curve, ellipse_2], 0)
+
+        target_curve_copy = preprocess_curves(target_curve[None], self.curve_size)[0]
+        target_curve_ = jax.numpy.copy(target_curve)
+
+        if self.smoothing:
+            target_curve = smooth_hand_drawn_curves(target_curve[None], n=self.curve_size, n_freq=self.n_freq)[0]
+        else:
+            target_curve = preprocess_curves(target_curve[None], self.curve_size)[0]
+
+        if partial:
+            # target_curve_copy_ = preprocess_curves(target_curve_[:size][None], self.curve_size)[0]
+            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.curve_size), target_curve, )
+            transformed_curve = apply_transforms(target_curve[None], tr, sc, -an)[0]
+            end_point = target_curve_[size - 1]
+            matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
+            target_curve = preprocess_curves(target_curve[:matched_point_idx + 1][None], self.curve_size)[0]
+
+            target_uni = jax.numpy.copy(target_curve_copy)
+
+            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.curve_size), target_uni, )
+            transformed_curve = apply_transforms(target_uni[None], tr, sc, -an)[0]
+            end_point = target_curve_[size - 1]
+            matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
+            target_curve_copy_ = uniformize(target_curve_copy[:matched_point_idx + 1][None], self.curve_size)[0]
+        else:
+            target_curve_copy_ = jax.numpy.copy(target_curve_copy)
+
+        fig1 = plt.figure(figsize=(5, 5))
+        if partial:
+            plt.plot(target_curve_[:size][:, 0], target_curve_[:size][:, 1], color="indigo")
+        else:
+            plt.plot(target_curve_copy[:, 0], target_curve_copy[:, 1], color="indigo")
+        plt.axis('equal')
+        plt.axis('off')
+        plt.title('Original Curve')
+
+        fig2 = plt.figure(figsize=(5, 5))
+        plt.plot(target_curve[:, 0], target_curve[:, 1], color="indigo")
+        plt.axis('equal')
+        plt.axis('off')
+        plt.title('Preprocessed Curve')
+
+        # save all variables which will be used in the next step
+        payload = [target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size]
+
+        return payload, fig1, fig2
+
     # 嵌入空间检索和候选生成
     def demo_sythesize_step_2(self, payload, max_size=20):
         target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size = payload

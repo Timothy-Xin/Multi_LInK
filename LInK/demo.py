@@ -63,6 +63,8 @@ function test(){
         function pre_multi_defined_curve(curve_json){
           let curves = JSON.parse(curve_json);  // curves 是一个二维数组的数组
           document.getElementById("sketch").innerHTML = "";
+          path = [];
+          path_start = curves[0][0];
 
           for (let curve of curves) {
             for (let i = 0; i < curve.length - 1; i++) {
@@ -70,6 +72,7 @@ function test(){
                 '<line x1="' + curve[i][0] + '" y1="' + curve[i][1] + '" x2="' + curve[i + 1][0] + '" y2="' + curve[i + 1][1] + '" stroke="black" />';
             }
           }
+          path = curves;
         }
 
         function downloadObjectAsJson(exportName){
