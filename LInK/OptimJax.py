@@ -293,6 +293,14 @@ def preprocess_multi_curves_as_whole(curves):
 def get_scales(curves):
     return jax.numpy.sqrt(jax.numpy.square(curves - curves.mean(1)).sum(-1).sum(-1) / curves.shape[1])
 
+@jax.jit
+def get_multi_scales(curves):
+    # curves: (n, 200, 2)
+    mean = curves.mean(axis=1, keepdims=True)  # 每条曲线的中心点 (n, 1, 2)
+    centered = curves - mean  # 平移到原点 (n, 200, 2)
+    scale = jax.numpy.sqrt(jax.numpy.square(centered).sum(axis=-1).sum(axis=-1) / curves.shape[1])  # (n,)
+    return scale
+
 
 # 计算目标曲线与由机构参数生成的曲线之间的目标函数值，结合了Chamfer距离和有序距离。
 @jax.jit
@@ -459,6 +467,36 @@ def smooth_hand_drawn_curves(curves, n=200, n_freq=5):
                                                            axis=1))[:, :, None]], axis=2)
 
     return preprocess_curves(curves, n)
+
+def smooth_hand_drawn_multi_curves(curves, n=200, n_freq=5):
+    smoothed_curves = []
+
+    for i in range(curves.shape[0]):
+        curve = curves[i][None, ...]  # 取出一条曲线，保持 batch_dim 方便 uniformize
+
+        # Step 1: 均匀采样
+        curve = uniformize(curve, n)
+
+        # Step 2: 居中
+        curve = curve - curve.mean(1)[:, None]
+
+        # Step 3: 缩放
+        s = jax.numpy.sqrt(jax.numpy.square(curve).sum(-1).sum(-1) / n)[:, None, None]
+        curve = curve / s
+
+        # Step 4: 低频滤波
+        curve = jax.numpy.concatenate([
+            jax.numpy.real(jax.numpy.fft.ifft(jax.numpy.fft.fft(curve[:, :, 0], axis=1)[:, 0:n_freq], n=n, axis=1))[:, :, None],
+            jax.numpy.real(jax.numpy.fft.ifft(jax.numpy.fft.fft(curve[:, :, 1], axis=1)[:, 0:n_freq], n=n, axis=1))[:, :, None]
+        ], axis=2)
+
+        # Step 5: 预处理
+        curve = preprocess_curves(curve)
+
+        smoothed_curves.append(curve[0])  # squeeze batch_dim
+
+    curves = jax.numpy.stack(smoothed_curves, axis=0)
+    return curves
 
 
 # 更新优化过程中的进度信息。
@@ -890,81 +928,101 @@ class PathSynthesis:
         torch.cuda.empty_cache()
         start_time = time.time()
 
-        target_curve = preprocess_curves(target_curve[None], self.curve_size)[0]
+        # 记录原始曲线数量、原始第0条曲线的长度
+        size = target_curve[0].shape[0]
 
-        og_scale = get_scales(target_curve[None])[0]
+        # ---- Step 1: 预处理标准化 ----
+        target_curve = preprocess_multi_curves_as_whole(target_curve)  # shape: (n, 200, 2)
+        og_scale = get_multi_scales(target_curve.reshape(-1, 200, 2))[0]  # 整体缩放比例
 
-        size = target_curve.shape[0]
         if partial:
-            # fit an ellipse that passes through the first and last point and is centered at the mean of the curve
-            center = (target_curve[-1] + target_curve[0]) / 2
-            start_point = target_curve[-1]
-            end_point = target_curve[0]
+            # ---- partial模式，单独处理第0条曲线 ----
+            first_curve = target_curve[0]
+            center = (first_curve[-1] + first_curve[0]) / 2
+            start_point = first_curve[-1]
+            end_point = first_curve[0]
+
             a = jax.numpy.linalg.norm(start_point - center)
             b = jax.numpy.linalg.norm(end_point - center)
             start_angle = jax.numpy.arctan2(start_point[1] - center[1], start_point[0] - center[0])
             end_angle = jax.numpy.arctan2(end_point[1] - center[1], end_point[0] - center[0])
 
-            angles = jax.numpy.linspace(start_angle, end_angle, self.curve_size)
-            ellipse = jax.numpy.stack([center[0] + a * jax.numpy.cos(angles), center[1] + b * jax.numpy.sin(angles)], 1)
+            angles1 = jax.numpy.linspace(start_angle, end_angle, self.curve_size)
+            ellipse1 = jax.numpy.stack([
+                center[0] + a * jax.numpy.cos(angles1),
+                center[1] + b * jax.numpy.sin(angles1)
+            ], axis=1)
 
-            angles = jax.numpy.linspace(start_angle + 2 * np.pi, end_angle, self.curve_size)
-            ellipse_2 = jax.numpy.stack([center[0] + a * jax.numpy.cos(angles), center[1] + b * jax.numpy.sin(angles)],
-                                        1)
+            angles2 = jax.numpy.linspace(start_angle + 2 * jax.numpy.pi, end_angle, self.curve_size)
+            ellipse2 = jax.numpy.stack([
+                center[0] + a * jax.numpy.cos(angles2),
+                center[1] + b * jax.numpy.sin(angles2)
+            ], axis=1)
 
-            # ellipse 1 length
-            l_1 = jax.numpy.linalg.norm(ellipse - target_curve.mean(0), axis=-1).sum()
-            # ellipse 2 length
-            l_2 = jax.numpy.linalg.norm(ellipse_2 - target_curve.mean(0), axis=-1).sum()
+            # 比较哪条椭圆更优
+            l1 = jax.numpy.linalg.norm(ellipse1 - first_curve.mean(0), axis=-1).sum()
+            l2 = jax.numpy.linalg.norm(ellipse2 - first_curve.mean(0), axis=-1).sum()
+            best_ellipse = ellipse1 if l1 > l2 else ellipse2
 
-            if l_1 > l_2:
-                target_curve = jax.numpy.concatenate([target_curve, ellipse], 0)
-            else:
-                target_curve = jax.numpy.concatenate([target_curve, ellipse_2], 0)
+            # 原曲线和椭圆拼接
+            closed_curve = jax.numpy.concatenate([first_curve, best_ellipse], axis=0)
 
-        target_curve_copy = preprocess_curves(target_curve[None], self.curve_size)[0]
-        target_curve_ = jax.numpy.copy(target_curve)
+            # 记录闭合前曲线
+            target_curve_ = jax.numpy.copy(first_curve)
 
+            # 闭合后重新标准化到 curve_size (200个点)
+            closed_curve = uniformize(closed_curve[None], self.curve_size)[0]
+
+            # 替换原 target_curve 第0条
+            target_curve = target_curve.at[0].set(target_curve_)
+
+            # 重新整体标准化（防止闭合后尺度漂移）
+            target_curve_copy = preprocess_multi_curves_as_whole(target_curve)  # (n, 200, 2)
+
+            # 找截断位置，生成 partial 版
+            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.curve_size), target_curve_copy[:1])
+            transformed = apply_transforms(target_curve_copy[:1], tr, sc, -an)[0]
+            matched_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed - target_curve_[-1], axis=-1))
+
+            target_curve_copy_ = uniformize(target_curve_copy[0:1, :matched_idx + 1], self.curve_size)[0]  # (200, 2)
+
+        else:
+            # ---- 非 partial模式，直接处理所有曲线 ----
+            target_curve_ = jax.numpy.copy(target_curve[:1])  # 原第0条曲线
+            target_curve_copy = preprocess_multi_curves_as_whole(target_curve[:1])  # 标准化第0条
+            target_curve_copy_ = jax.numpy.copy(target_curve_copy)  # 保持完整
+
+        # ---- Step 2: 平滑处理 ----
         if self.smoothing:
-            target_curve = smooth_hand_drawn_curves(target_curve[None], n=self.curve_size, n_freq=self.n_freq)[0]
+            target_curve = smooth_hand_drawn_multi_curves(target_curve, n=self.curve_size, n_freq=self.n_freq)
         else:
-            target_curve = preprocess_curves(target_curve[None], self.curve_size)[0]
+            target_curve = preprocess_multi_curves_as_whole(target_curve)
 
-        if partial:
-            # target_curve_copy_ = preprocess_curves(target_curve_[:size][None], self.curve_size)[0]
-            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.curve_size), target_curve, )
-            transformed_curve = apply_transforms(target_curve[None], tr, sc, -an)[0]
-            end_point = target_curve_[size - 1]
-            matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
-            target_curve = preprocess_curves(target_curve[:matched_point_idx + 1][None], self.curve_size)[0]
-
-            target_uni = jax.numpy.copy(target_curve_copy)
-
-            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.curve_size), target_uni, )
-            transformed_curve = apply_transforms(target_uni[None], tr, sc, -an)[0]
-            end_point = target_curve_[size - 1]
-            matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
-            target_curve_copy_ = uniformize(target_curve_copy[:matched_point_idx + 1][None], self.curve_size)[0]
-        else:
-            target_curve_copy_ = jax.numpy.copy(target_curve_copy)
-
+        # ---- Step 3: 可视化 ----
         fig1 = plt.figure(figsize=(5, 5))
-        if partial:
-            plt.plot(target_curve_[:size][:, 0], target_curve_[:size][:, 1], color="indigo")
-        else:
-            plt.plot(target_curve_copy[:, 0], target_curve_copy[:, 1], color="indigo")
+        for c in target_curve_copy:
+            plt.plot(c[:, 0], c[:, 1], alpha=0.6, color='indigo')
         plt.axis('equal')
         plt.axis('off')
         plt.title('Original Curve')
 
         fig2 = plt.figure(figsize=(5, 5))
-        plt.plot(target_curve[:, 0], target_curve[:, 1], color="indigo")
+        for c in target_curve_copy:
+            plt.plot(c[:, 0], c[:, 1], alpha=0.6, color='indigo')
         plt.axis('equal')
         plt.axis('off')
         plt.title('Preprocessed Curve')
 
-        # save all variables which will be used in the next step
-        payload = [target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size]
+        # ---- Step 4: 封装输出 ----
+        payload = [
+            target_curve_copy,  # 标准化后的闭合曲线 (或直接标准化)
+            target_curve_copy_,  # 截断后的闭合曲线
+            target_curve_,  # 原始曲线
+            target_curve,  # 平滑后的最终曲线
+            og_scale,  # 原缩放比例
+            partial,  # partial标志
+            size  # 原曲线长度
+        ]
 
         return payload, fig1, fig2
 
