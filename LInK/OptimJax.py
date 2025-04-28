@@ -1009,7 +1009,6 @@ class PathSynthesis:
         else:
             target_curve_copy_ = jax.numpy.copy(target_curve_copy)  # target_curve_copy_
 
-        target_curve = target_curve.at[0].set(first_curve)
         # ---- Step 3: 可视化 ----
         fig1 = plt.figure(figsize=(5, 5))
         for c in target_curve_n:
@@ -1019,8 +1018,7 @@ class PathSynthesis:
         plt.title('Original Curve')
 
         fig2 = plt.figure(figsize=(5, 5))
-        for c in target_curve:
-            plt.plot(c[:, 0], c[:, 1], color='indigo')
+        plt.plot(first_curve[:, 0], first_curve[:, 1], color="indigo")
         plt.axis('equal')
         plt.axis('off')
         plt.title('Preprocessed Curve')
@@ -1030,7 +1028,7 @@ class PathSynthesis:
             target_curve_copy_n,  # 初步处理后的完整曲线（无smoothing/无partial剪裁，用于显示）(3,200,2)
             target_curve_copy_,  # 修剪成 partial 部分后的 target_curve_copy（用于后续 uniformize 等操作）
             target_curve_,  # partial补齐后的曲线，smoothing前
-            target_curve,  # partial补齐smoothing后切分的曲线(3,200,2)
+            first_curve,  # partial补齐smoothing后切分的曲线(200,2)
             og_scale,
             partial,
             size
@@ -1098,7 +1096,7 @@ class PathSynthesis:
         target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size = payload
 
         # 构造输入 tensor：把目标曲线放在 batch 第一位，其它位置随机填充 255 条曲线
-        input_tensor = target_curve[0:1]
+        input_tensor = target_curve[None]
         batch_padd = preprocess_curves(self.curves[np.random.choice(self.curves.shape[0], 255)])
 
         input_tensor = torch.tensor(np.concatenate([input_tensor, batch_padd], 0)).float().to(self.device)
