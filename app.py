@@ -394,11 +394,9 @@ with gr.Blocks(css=css, js=draw_script) as block:
                 }
             """,
         outputs=[state, og_plt, smooth_plt], concurrency_limit=10)
-
-
-    # multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_sythesize_step_2(s, max_size=mj),
-    #                                  inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
-    #                                  concurrency_limit=10)
+    multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_multi_sythesize_step_2(s, max_size=mj),
+                                     inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
+                                     concurrency_limit=10)
     # multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()),
     #                                  inputs=[syth, state],
     #                                  outputs=[mechanism_plot, state, progl], concurrency_limit=10)
