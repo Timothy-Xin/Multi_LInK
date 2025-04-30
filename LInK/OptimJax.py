@@ -352,14 +352,18 @@ def make_batch_optim_obj(curve, As, x0s, node_types, timesteps=2000, CD_weight=1
     # 计算机械机构在各个时间步长下的位置轨迹
     sol = solve_rev_vectorized_batch(As, x0s, node_types, thetas)
 
+    # 获取终点轨迹
     idxs = (As.sum(-1) > 0).sum(-1) - 1
     best_matches = sol[jax.numpy.arange(sol.shape[0]), idxs]
+
+    # 掩膜无效的匹配
     good_idx = jax.numpy.logical_not(jax.numpy.isnan(best_matches.sum(-1).sum(-1)))
     best_matches_masked = best_matches * good_idx[:, None, None]
     best_matches_r_masked = best_matches[good_idx][0][None].repeat(best_matches.shape[0], 0) * ~good_idx[:, None, None]
     best_matches = best_matches_masked + best_matches_r_masked
     best_matches = uniformize(best_matches, curve.shape[0])
 
+    # 计算变换（平移、缩放和旋转）
     tr, sc, an = find_transforms(best_matches, curve, )
     tiled_curves = curve[None, :, :].repeat(best_matches.shape[0], 0)
     tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
@@ -403,6 +407,50 @@ def make_batch_optim_obj(curve, As, x0s, node_types, timesteps=2000, CD_weight=1
 
     return fn
 
+def make_multi_batch_optim_obj(curve, As, x0s, node_types, timesteps=2000, CD_weight=1.0, OD_weight=1.0, start_theta=0.0,
+                         end_theta=2 * jax.numpy.pi):
+    thetas = jax.numpy.linspace(start_theta, end_theta, timesteps)
+    # 计算机械机构在各个时间步长下的位置轨迹
+    sol = solve_rev_vectorized_batch(As, x0s, node_types, thetas)
+
+    # 提取对应节点的轨迹
+    idxs_end = (As.sum(-1) > 0).sum(-1) - 1  # 终点索引
+    idxs_neighbors = idxs_end[:, None] - jax.numpy.array([1, 2])  # 相邻点的索引（往前数1和2）
+
+    # 针对不同batch做索引
+    batch_indices = jax.numpy.arange(sol.shape[0])
+
+    # 取终点轨迹
+    traj_end = sol[batch_indices[:, None], idxs_end[:, None]]  # shape (batch_size, 1, 3)
+    # 取相邻节点轨迹（注意要防止idx越界）
+    traj_neighbors = sol[batch_indices[:, None, None], idxs_neighbors[:, :, None]]  # shape (batch_size, 2, 3)
+    # 扩展 traj_neighbors 以匹配 traj_end 的维度
+    traj_neighbors_expanded = jax.numpy.squeeze(traj_neighbors, axis=2)  # 去掉第3个维度，变为 (300, 2, 2000, 2)
+
+    # 现在可以进行拼接
+    all_trajs = jax.numpy.concatenate([traj_end, traj_neighbors_expanded], axis=1)  # 形状 (300, 3, 2000, 2)
+
+    # 处理NaN（掩膜无效轨迹）
+    good_idx = jax.numpy.logical_not(jax.numpy.isnan(all_trajs.sum(-1).sum(-1).sum(-1)))
+    all_trajs_masked = all_trajs * good_idx[:, None, None, None]
+    all_trajs_r_masked = all_trajs[good_idx][0][None].repeat(all_trajs.shape[0], 0) * ~good_idx[:, None, None, None]
+    all_trajs = all_trajs_masked + all_trajs_r_masked
+
+    # 注意：你的 curve 已经是 (n, 200, 3)，所以不需要uniformize，除非步数对不上
+    # 如果要强制统一点数，比如 curve 不是 200步，可以加 uniformize
+
+    # 计算变换，让轨迹和目标curve对齐（分别对终点轨迹和相邻点轨迹）
+    tr, sc, an = find_transforms(all_trajs[:, 0], curve[0])  # 用终点轨迹对齐
+    tiled_curves = curve[None, :, :, :].repeat(all_trajs.shape[0], 0)  # shape: (batch_size, n, 200, 3)
+    tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
+
+    # 定义优化目标
+    def fn(x0s_current):
+        return final_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves,
+                           CD_weight, OD_weight)
+
+    return fn
+
 
 # 计算目标函数值，用于评估当前机构状态生成的曲线与目标曲线之间的匹配程度。
 def objective(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD_weight, OD_weight):
@@ -429,15 +477,55 @@ def objective(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves
 
     return objective_function
 
+def objective_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight):
+    current_x0 = x0s_current
+    sol = solve_rev_vectorized_batch(As, current_x0, node_types, thetas)
+
+    batch_size = sol.shape[0]
+
+    # 取出终点轨迹
+    current_sol_end = sol[jax.numpy.arange(batch_size), idxs_end]
+    # 取出相邻轨迹，注意：idxs_neighbors shape 是 (batch_size, 2)，要展开索引
+    current_sol_neighbors = sol[jax.numpy.arange(batch_size)[:, None], idxs_neighbors]  # (batch_size, 2, T, 3)
+
+    # 合并终点和邻居轨迹
+    current_sol_all = jax.numpy.concatenate(
+        [current_sol_end[:, None, :, :], current_sol_neighbors], axis=1
+    )  # (batch_size, n_curves, T, 3)
+
+    # --- NaN处理 ---
+    good_idx = jax.numpy.logical_not(jax.numpy.isnan(current_sol_all.sum(-1).sum(-1).sum(-1)))  # shape (batch_size,)
+    current_sol_all_r_masked = current_sol_all * ~good_idx[:, None, None, None]
+    current_sol_all = uniformize(current_sol_all, current_sol_all.shape[2])  # 保持T对齐
+    current_sol_all = current_sol_all * good_idx[:, None, None, None] + current_sol_all_r_masked
+
+    # --- 计算每条轨迹的CD和OD ---
+    # tiled_curves: (batch_size, n_curves, 200, 3)
+    current_sol_all_normed = current_sol_all / sc[:, None, None, None]
+    tiled_curves_normed = tiled_curves / sc[:, None, None, None]
+
+    OD = batch_ordered_distance(current_sol_all_normed, tiled_curves_normed)  # shape (batch_size, n_curves)
+    CD = batch_chamfer_distance(current_sol_all_normed, tiled_curves_normed)  # shape (batch_size, n_curves)
+
+    # --- 总目标函数: 可以取平均或者加权和 ---
+    objective_function = CD_weight * CD + OD_weight * OD  # shape (batch_size, n_curves)
+    objective_function = objective_function.mean(-1)  # 对n_curves求平均，shape (batch_size,)
+
+    objective_function = jax.numpy.where(jax.numpy.isnan(objective_function), 1e6, objective_function)
+
+    return objective_function
 
 # 计算目标函数值的总和及其辅助值。
 def get_sum(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD_weight, OD_weight):
     obj = objective(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD_weight, OD_weight)
     return obj.sum(), obj
 
+def get_sum_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight):
+    obj = objective_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight)
+    return obj.sum(), obj
 
 fn = jax.jit(jax.value_and_grad(get_sum, has_aux=True))
-
+fn_multi = jax.jit(jax.value_and_grad(get_sum_multi, has_aux=True))
 
 # 计算目标函数值及其梯度。
 def final(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD_weight, OD_weight):
@@ -448,6 +536,13 @@ def final(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD
 
     return val, grad
 
+def final_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight):
+    val, grad = fn_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight)
+
+    val = jax.numpy.nan_to_num(val[1], nan=1e6)
+    grad = jax.numpy.nan_to_num(grad, nan=0)
+
+    return val, grad
 
 # 对曲线进行平滑处理，减少噪声。
 def smooth_hand_drawn_curves(curves, n=200, n_freq=5):
@@ -1151,9 +1246,10 @@ class PathSynthesis:
     def demo_sythesize_step_3(self, payload, progress=None):
         idxs, tid, target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size = payload
 
-        As = self.As[idxs[tid]]
-        x0s = self.x0s[idxs[tid]]
-        node_types = self.node_types[idxs[tid]]
+        # 取出初始设计参数
+        As = self.As[idxs[tid]]                         # 机构的连接矩阵（节点连接关系）
+        x0s = self.x0s[idxs[tid]]                       # 初始节点位置，表示每个关节的初始位置
+        node_types = self.node_types[idxs[tid]]         # 表示每个节点是否为固定节点
 
         # 创建优化目标函数
         obj = make_batch_optim_obj(target_curve_copy, As, x0s, node_types, timesteps=self.optim_timesteps,
@@ -1240,6 +1336,136 @@ class PathSynthesis:
 
             tr, sc, an = find_transforms(best_matches, target_uni, )
             tiled_curves = uniformize(target_curve_copy[None], self.optim_timesteps)
+            tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
+            transformed_curve = tiled_curves[0]
+
+            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+
+            st_theta = 0.
+            en_theta = np.pi * 2
+
+        # 提取最优机构（best_idx）相关信息，去掉孤立点
+        n_joints = (As[best_idx].sum(-1) > 0).sum()
+        # 画出机构运动轨迹
+        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+        ax = draw_mechanism(As[best_idx][:n_joints, :][:, :n_joints], x[best_idx][0:n_joints],
+                            np.where(node_types[best_idx][0:n_joints])[0], [0, 1], highlight=tid[0].item(), solve=True,
+                            thetas=np.linspace(st_theta, en_theta, self.optim_timesteps), ax=ax)
+        ax.plot(transformed_curve[:, 0], transformed_curve[:, 1], color="indigo", alpha=0.7, linewidth=2)
+
+        # 再清洗一遍最优机构的数据
+        A = As[best_idx]
+        x = x[best_idx]
+        node_types = node_types[best_idx]
+
+        n_joints = (A.sum(-1) > 0).sum()
+
+        A = A[:n_joints, :][:, :n_joints]
+        x = x[:n_joints]
+        node_types = node_types[:n_joints]
+
+        transformation = [tr, sc, an]
+        start_theta = st_theta
+        end_theta = en_theta
+        performance = [CD.item() * og_scale, OD.item() * (og_scale ** 2), og_scale]
+        torch.cuda.empty_cache()
+        return fig, [[A, x, node_types, start_theta, end_theta, transformation], performance,
+                     transformed_curve], gr.update(value={"Progress": 1.0})
+
+    def demo_multi_sythesize_step_3(self, payload, progress=None):
+        idxs, tid, target_curve_copy, target_curve_copy_, target_curve_, target_curve, og_scale, partial, size = payload
+
+        # 取出初始设计参数
+        As = self.As[idxs[tid]]                         # 机构的连接矩阵（节点连接关系）
+        x0s = self.x0s[idxs[tid]]                       # 初始节点位置，表示每个关节的初始位置
+        node_types = self.node_types[idxs[tid]]         # 表示每个节点是否为固定节点
+
+        # 创建优化目标函数
+        obj = make_multi_batch_optim_obj(target_curve_copy, As, x0s, node_types, timesteps=self.optim_timesteps,
+                                   OD_weight=self.OD_weight, CD_weight=self.CD_weight)
+
+        prog = None
+
+        # 使用Batch_BFGS算法对初始参数x0s进行优化
+        x, f = Batch_BFGS(x0s, obj, max_iter=self.init_optim_iters, line_search_max_iter=self.BFGS_lineserach_max_iter,
+                          tau=self.BFGS_line_search_mult,
+                          progress=lambda x: demo_progress_updater(x, progress, desc='Stage 1: '), threshhold=0.001)
+
+        # top n level 2
+        top_n_2 = f.argsort()[:self.top_n_level2]
+        As = As[top_n_2]
+        x0s = x[top_n_2]
+        node_types = node_types[top_n_2]
+
+        # if partial:
+        #     obj = make_batch_optim_obj_partial(target_curve_copy, target_curve_copy_, As, x0s, node_types,timesteps=self.optim_timesteps,OD_weight=0.25)
+        # else:
+        obj = make_multi_batch_optim_obj(target_curve_copy, As, x0s, node_types, timesteps=self.optim_timesteps,
+                                   OD_weight=self.OD_weight, CD_weight=self.CD_weight)
+        prog2 = None
+
+        for i in range(self.n_repos):
+            x, f = Batch_BFGS(x0s, obj, max_iter=self.BFGS_max_iter // (self.n_repos + 1),
+                              line_search_max_iter=self.BFGS_lineserach_max_iter, tau=self.BFGS_line_search_mult,
+                              threshhold=0.04, progress=lambda x: demo_progress_updater(
+                    [x[0] / (self.n_repos + 1) + i / (self.n_repos + 1), x[1]], progress, desc='Stage 2: '))
+            x0s = x
+
+        x, f = Batch_BFGS(x0s, obj,
+                          max_iter=self.BFGS_max_iter - self.n_repos * self.BFGS_max_iter // (self.n_repos + 1),
+                          line_search_max_iter=self.BFGS_lineserach_max_iter, tau=self.BFGS_line_search_mult,
+                          threshhold=0.04, progress=lambda x: demo_progress_updater(
+                [x[0] / (self.n_repos + 1) + self.n_repos / (self.n_repos + 1), x[1]], progress, desc='Stage 2: '))
+
+        best_idx = f.argmin()
+
+        end_time = time.time()
+
+        if partial:
+            target_uni = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
+
+            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.optim_timesteps), target_uni, )
+            transformed_curve = apply_transforms(target_uni[None], tr, sc, -an)[0]
+            end_point = target_curve_[size - 1]
+            matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
+
+            sol = solve_rev_vectorized_batch(As[best_idx:best_idx + 1], x[best_idx:best_idx + 1],
+                                             node_types[best_idx:best_idx + 1],
+                                             jax.numpy.linspace(0, jax.numpy.pi * 2, self.optim_timesteps))
+            tid = (As[best_idx:best_idx + 1].sum(-1) > 0).sum(-1) - 1
+            best_matches = sol[np.arange(sol.shape[0]), tid]
+            original_match = jax.numpy.copy(best_matches)
+            best_matches = uniformize(best_matches, self.optim_timesteps)
+
+            tr, sc, an = find_transforms(best_matches, target_uni, )
+            tiled_curves = uniformize(target_uni[:matched_point_idx][None], self.optim_timesteps)
+            tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
+            transformed_curve = tiled_curves[0]
+
+            best_matches = get_partial_matches(best_matches, tiled_curves[0], )
+
+            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+
+            st_id, en_id = get_partial_index(original_match, tiled_curves[0], )
+
+            st_theta = np.linspace(0, 2 * np.pi, self.optim_timesteps)[st_id].squeeze()
+            en_theta = np.linspace(0, 2 * np.pi, self.optim_timesteps)[en_id].squeeze()
+
+            st_theta[st_theta > en_theta] = st_theta[st_theta > en_theta] - 2 * np.pi
+
+        else:
+            sol = solve_rev_vectorized_batch(As[best_idx:best_idx + 1], x[best_idx:best_idx + 1],
+                                             node_types[best_idx:best_idx + 1],
+                                             jax.numpy.linspace(0, jax.numpy.pi * 2, self.optim_timesteps))
+            tid = (As[best_idx:best_idx + 1].sum(-1) > 0).sum(-1) - 1
+            best_matches = sol[np.arange(sol.shape[0]), tid]
+            best_matches = uniformize(best_matches, self.optim_timesteps)
+            target_uni = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
+
+            tr, sc, an = find_transforms(best_matches, target_uni, )
+            tiled_curves = uniformize(target_curve_copy[0:1], self.optim_timesteps)
             tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
             transformed_curve = tiled_curves[0]
 

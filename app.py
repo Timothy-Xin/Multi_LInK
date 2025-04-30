@@ -397,9 +397,9 @@ with gr.Blocks(css=css, js=draw_script) as block:
     multi_event4 = multi_event3.then(lambda sy, s, mj: sy.demo_multi_sythesize_step_2(s, max_size=mj),
                                      inputs=[syth, state, maximum_joint_count], outputs=[state, candidate_plt],
                                      concurrency_limit=10)
-    # multi_event5 = multi_event4.then(lambda sy, s: sy.demo_sythesize_step_3(s, progress=gr.Progress()),
-    #                                  inputs=[syth, state],
-    #                                  outputs=[mechanism_plot, state, progl], concurrency_limit=10)
+    multi_event5 = multi_event4.then(lambda sy, s: sy.demo_multi_sythesize_step_3(s, progress=gr.Progress()),
+                                     inputs=[syth, state],
+                                     outputs=[mechanism_plot, state, progl], concurrency_limit=10)
     # multi_event6 = multi_event5.then(make_cad, inputs=[state, partial], outputs=[plot_3d], concurrency_limit=10)
     # multi_event7 = multi_event6.then(lambda: [gr.update(interactive=True)] * 8,
     #                                  outputs=[btn_multi_submit, n_freq, maximum_joint_count, time_steps, top_n,

@@ -162,6 +162,7 @@ def solve_rev_vectorized_batch_CPU(As,x0s,node_types,thetas):
     return x
 
 
+# 每个节点在每个时间步长下二维位置的数组
 def solve_rev_vectorized_batch_jax(As,x0s,node_types,thetas):
     
     Gs = jnp.square((jnp.expand_dims(x0s,1) - jnp.expand_dims(x0s,2))).sum(-1)
