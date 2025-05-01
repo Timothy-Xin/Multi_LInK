@@ -2,6 +2,7 @@ import jax
 import numpy as np
 from .Solver import solve_rev_vectorized_batch_jax as solve_rev_vectorized_batch
 
+import jax.numpy as jnp
 import torch
 import torch.nn as nn
 from .BFGS_jax import Batch_BFGS
@@ -70,6 +71,35 @@ def uniformize(curves, n):
 
     return uniform_curves
 
+def uniformize_multi(curves: jnp.ndarray, n: int) -> jnp.ndarray:
+    """
+    将 (B, N, T, 2) 的曲线 uniformize 为固定长度 n。
+    """
+    B, N, T, D = curves.shape
+
+    # 计算累积距离
+    diffs = curves[:, :, 1:, :] - curves[:, :, :-1, :]  # (B, N, T-1, 2)
+    dists = jnp.linalg.norm(diffs, axis=-1)  # (B, N, T-1)
+    dists = jnp.pad(dists, ((0, 0), (0, 0), (1, 0)))  # pad 前置 0
+    cum_dists = jnp.cumsum(dists, axis=-1)  # (B, N, T)
+    cum_dists /= cum_dists[:, :, -1:].clip(min=1e-8)  # 归一化到 [0, 1]
+
+    # 目标采样点
+    sampling = jnp.linspace(-1e-6, 1 - 1e-6, n)  # (n,)
+
+    def interp_single(c, l):
+        idxs = jnp.searchsorted(l, sampling)  # (n,)
+        idxs = jnp.clip(idxs, 1, T - 1)
+        l_start = l[idxs - 1]
+        l_end = l[idxs]
+        w = (l_end - sampling) / (l_end - l_start + 1e-8)
+
+        pt_start = c[idxs - 1]
+        pt_end = c[idxs]
+        return pt_end - (pt_end - pt_start) * w[:, None]  # (n, 2)
+
+    vmap_interp = jax.vmap(jax.vmap(interp_single, in_axes=(0, 0)), in_axes=(0, 0))
+    return vmap_interp(curves, cum_dists)  # (B, N, n, 2)
 
 # 计算两个点x和y之间的欧几里得距离。
 @jax.jit
@@ -112,6 +142,25 @@ def batch_chamfer_distance(c1, c2):
 
     return d1 + d2
 
+@jax.jit
+def multi_batch_chamfer_distance(c1: jnp.ndarray, c2: jnp.ndarray) -> jnp.ndarray:
+    """
+    更高效地计算 Batched Chamfer 距离。
+    输入:
+        c1: (B, N, T, D)
+        c2: (B, N, T, D)
+    输出:
+        (B, N)
+    """
+    # c1 → c2 最近点距离
+    dists_1 = jnp.linalg.norm(c1[:, :, :, None, :] - c2[:, :, None, :, :], axis=-1)  # (B, N, T, T)
+    min_dists_1 = dists_1.min(axis=-1).mean(axis=-1)  # (B, N)
+
+    # c2 → c1 最近点距离
+    dists_2 = jnp.linalg.norm(c2[:, :, :, None, :] - c1[:, :, None, :, :], axis=-1)  # (B, N, T, T)
+    min_dists_2 = dists_2.min(axis=-1).mean(axis=-1)  # (B, N)
+
+    return min_dists_1 + min_dists_2  # (B, N)
 
 # 计算两个点集c1和c2之间的批量有序距离，考虑点的顺序（顺时针和逆时针）。
 @jax.jit
@@ -145,6 +194,30 @@ def batch_ordered_distance(c1, c2):
 
     return ds
 
+@jax.jit
+def multi_batch_ordered_distance(c1: jnp.ndarray, c2: jnp.ndarray) -> jnp.ndarray:
+    """
+    高效计算多 batch 的 ordered distance，考虑时间轴平移（顺/逆时针）。
+    输入:
+        c1, c2: (B, N, T, D)
+    输出:
+        (B, N)
+    """
+    B, N, T, D = c1.shape
+    shifts = jnp.arange(T)
+
+    def single_ordered(c1_curve, c2_curve):
+        def mse_shift(shift):
+            c2_roll_cw = jnp.roll(c2_curve, shift, axis=0)
+            c2_roll_ccw = jnp.roll(c2_curve, -shift, axis=0)
+            mse_cw = jnp.mean((c1_curve - c2_roll_cw) ** 2)
+            mse_ccw = jnp.mean((c1_curve - c2_roll_ccw) ** 2)
+            return jnp.minimum(mse_cw, mse_ccw)
+        return jnp.min(jax.vmap(mse_shift)(shifts))
+
+    return jax.vmap(  # over batch
+        lambda c1_b, c2_b: jax.vmap(single_ordered)(c1_b, c2_b)
+    )(c1, c2)  # -> (B, N)
 
 # 计算两个点集（如曲线）之间的有序距离，考虑点的顺序（顺时针和逆时针），并返回最小的那个距离。
 @jax.jit
@@ -232,6 +305,33 @@ def apply_transforms(curves, translations, scales, rotations):
     curves = curves + translations[:, None]
     return curves
 
+def apply_transforms_multi(curves, translations, scales, rotations):
+    """
+    curves: shape (B, N, T, 2)
+    translations: (B, 2)
+    scales: (B,)
+    rotations: (B,)
+    """
+    B, N, T, _ = curves.shape
+
+    # 缩放
+    curves = curves * scales[:, None, None, None]  # (B, N, T, 2)
+
+    # 旋转矩阵 (B, 2, 2)
+    cos_theta = jax.numpy.cos(rotations)
+    sin_theta = jax.numpy.sin(rotations)
+    R = jax.numpy.stack([
+        jax.numpy.stack([cos_theta, -sin_theta], axis=-1),
+        jax.numpy.stack([sin_theta,  cos_theta], axis=-1)
+    ], axis=-2)  # shape (B, 2, 2)
+
+    # 旋转：需要 reshape -> matmul -> reshape back
+    curves = jax.numpy.einsum('bij,bntj->bnti', R, curves)  # (B, N, T, 2)
+
+    # 平移
+    curves = curves + translations[:, None, None, :]  # (B, N, T, 2)
+
+    return curves
 
 # 对曲线进行标准化预处理，包括均匀采样、中心化、缩放标准化和方向对齐。
 def preprocess_curves(curves, n=200):
@@ -435,14 +535,24 @@ def make_multi_batch_optim_obj(curve, As, x0s, node_types, timesteps=2000, CD_we
     all_trajs_masked = all_trajs * good_idx[:, None, None, None]
     all_trajs_r_masked = all_trajs[good_idx][0][None].repeat(all_trajs.shape[0], 0) * ~good_idx[:, None, None, None]
     all_trajs = all_trajs_masked + all_trajs_r_masked
+    # all_trajs.shape == (B, 3, 2000, 2)
+    N = 200  # 统一为200点
+    B = all_trajs.shape[0]
+    new_all_trajs = []
 
-    # 注意：你的 curve 已经是 (n, 200, 3)，所以不需要uniformize，除非步数对不上
-    # 如果要强制统一点数，比如 curve 不是 200步，可以加 uniformize
+    for b in range(B):
+        trajs = []
+        for k in range(3):  # 3条轨迹：终点+邻居
+            traj_uniform = uniformize(all_trajs[b, k][None, :, :], N)[0]  # (200, 2)
+            trajs.append(traj_uniform)
+        new_all_trajs.append(jax.numpy.stack(trajs, axis=0))  # (3, 200, 2)
+
+    all_trajs_uniform = jax.numpy.stack(new_all_trajs, axis=0)  # (B, 3, 200, 2)
 
     # 计算变换，让轨迹和目标curve对齐（分别对终点轨迹和相邻点轨迹）
-    tr, sc, an = find_transforms(all_trajs[:, 0], curve[0])  # 用终点轨迹对齐
-    tiled_curves = curve[None, :, :, :].repeat(all_trajs.shape[0], 0)  # shape: (batch_size, n, 200, 3)
-    tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
+    tr, sc, an = find_transforms(all_trajs_uniform[:, 0], curve[0])  # 用终点轨迹对齐
+    tiled_curves = curve[None, :, :, :].repeat(all_trajs_uniform.shape[0], 0)  # shape: (batch_size, n, 200, 3)
+    tiled_curves = apply_transforms_multi(tiled_curves, tr, sc, -an)
 
     # 定义优化目标
     def fn(x0s_current):
@@ -477,43 +587,52 @@ def objective(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves
 
     return objective_function
 
-def objective_multi(x0s_current, As, node_types, curve, thetas, idxs_end, idxs_neighbors, sc, tiled_curves, CD_weight, OD_weight):
+def objective_multi(x0s_current, As, node_types, curve, thetas,
+                    idxs_end, idxs_neighbors, sc, tiled_curves,
+                    CD_weight, OD_weight):
+
     current_x0 = x0s_current
-    sol = solve_rev_vectorized_batch(As, current_x0, node_types, thetas)
+    sol = solve_rev_vectorized_batch(As, current_x0, node_types, thetas)  # (B, n_nodes, T, 3)
+    B = sol.shape[0]
 
-    batch_size = sol.shape[0]
+    # === 提取终点及邻居轨迹 ===
+    sol_end = sol[jnp.arange(B), idxs_end]  # (B, T, 3)
+    sol_neighbors = sol[jnp.arange(B)[:, None], idxs_neighbors]  # (B, N-1, T, 3)
+    sol_all = jnp.concatenate([sol_end[:, None, :, :], sol_neighbors], axis=1)  # (B, N, T, 3)
 
-    # 取出终点轨迹
-    current_sol_end = sol[jax.numpy.arange(batch_size), idxs_end]
-    # 取出相邻轨迹，注意：idxs_neighbors shape 是 (batch_size, 2)，要展开索引
-    current_sol_neighbors = sol[jax.numpy.arange(batch_size)[:, None], idxs_neighbors]  # (batch_size, 2, T, 3)
+    # === mask 掉 NaN 批次 ===
+    valid_mask = ~jnp.isnan(sol_all).sum(axis=(1, 2, 3)).astype(bool)  # (B,)
+    sol_all = jnp.where(valid_mask[:, None, None, None], sol_all, 0.0)
 
-    # 合并终点和邻居轨迹
-    current_sol_all = jax.numpy.concatenate(
-        [current_sol_end[:, None, :, :], current_sol_neighbors], axis=1
-    )  # (batch_size, n_curves, T, 3)
+    # === 向量化 uniformize ===
+    # 将 (B, N, T, 3) → (B*N, T, 3)，只对前两维拼接处理
+    BN = B * sol_all.shape[1]
+    flat_curves = sol_all.reshape((BN, -1, 2))  # (B*N, T, 2)
+    flat_curves_2d = flat_curves[:, :, :2]
 
-    # --- NaN处理 ---
-    good_idx = jax.numpy.logical_not(jax.numpy.isnan(current_sol_all.sum(-1).sum(-1).sum(-1)))  # shape (batch_size,)
-    current_sol_all_r_masked = current_sol_all * ~good_idx[:, None, None, None]
-    current_sol_all = uniformize(current_sol_all, current_sol_all.shape[2])  # 保持T对齐
-    current_sol_all = current_sol_all * good_idx[:, None, None, None] + current_sol_all_r_masked
+    uniform_2d = uniformize(flat_curves_2d, 200)  # (B*N, 200, 2)
+    uniform_z = flat_curves[:, :200, 2:]  # 截断 Z，(B*N, 200, 1)
+    uniform_3d = jnp.concatenate([uniform_2d, uniform_z], axis=-1)  # (B*N, 200, 2)
 
-    # --- 计算每条轨迹的CD和OD ---
-    # tiled_curves: (batch_size, n_curves, 200, 3)
-    current_sol_all_normed = current_sol_all / sc[:, None, None, None]
-    tiled_curves_normed = tiled_curves / sc[:, None, None, None]
+    # reshape 回 (B, N, T, 2)
+    sol_all = uniform_3d.reshape((B, -1, 200, 2))
+    tiled_curves = tiled_curves[:, :, :200, :]
 
-    OD = batch_ordered_distance(current_sol_all_normed, tiled_curves_normed)  # shape (batch_size, n_curves)
-    CD = batch_chamfer_distance(current_sol_all_normed, tiled_curves_normed)  # shape (batch_size, n_curves)
+    # === Normalize ===
+    sol_all = sol_all / sc[:, None, None, None]
+    tiled_curves = tiled_curves / sc[:, None, None, None]
 
-    # --- 总目标函数: 可以取平均或者加权和 ---
-    objective_function = CD_weight * CD + OD_weight * OD  # shape (batch_size, n_curves)
-    objective_function = objective_function.mean(-1)  # 对n_curves求平均，shape (batch_size,)
+    # === 计算 CD 和 OD ===
+    CD = multi_batch_chamfer_distance(sol_all, tiled_curves)
+    OD = multi_batch_ordered_distance(sol_all, tiled_curves)
 
-    objective_function = jax.numpy.where(jax.numpy.isnan(objective_function), 1e6, objective_function)
+    # === 聚合 ===
+    loss = CD_weight * CD + OD_weight * OD  # (B, N)
+    loss = jnp.where(valid_mask[:, None], loss, 1e6)
+    loss = jnp.mean(loss, axis=-1)  # (B,)
 
-    return objective_function
+    return loss
+
 
 # 计算目标函数值的总和及其辅助值。
 def get_sum(x0s_current, As, node_types, curve, thetas, idxs, sc, tiled_curves, CD_weight, OD_weight):
