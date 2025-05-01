@@ -1273,7 +1273,6 @@ class PathSynthesis:
         # max batch size is 250
         tr, sc, an = [], [], []
         for i in range(int(np.ceil(self.top_n * 5 / 250))):
-            # 使用 target_curve_copy 作为目标曲线进行变换，可以确保变换是基于原始曲线的几何形状来进行的，而不是被补充过的曲线。
             tr_, sc_, an_ = find_transforms(self.curves[idxs[i * 250:(i + 1) * 250]], target_curve_copy, )
             tr.append(tr_)
             sc.append(sc_)
@@ -1328,7 +1327,6 @@ class PathSynthesis:
         # max batch size is 250
         tr, sc, an = [], [], []
         for i in range(int(np.ceil(self.top_n * 5 / 250))):
-            # 使用 target_curve_copy 作为目标曲线进行变换，可以确保变换是基于原始曲线的几何形状来进行的，而不是被补充过的曲线。
             tr_, sc_, an_ = find_transforms(self.curves[idxs[i * 250:(i + 1) * 250]], target_curve_copy[0], )
             tr.append(tr_)
             sc.append(sc_)
@@ -1542,10 +1540,12 @@ class PathSynthesis:
         end_time = time.time()
 
         if partial:
-            target_uni = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
+            target_uni_1 = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
+            target_uni_2 = uniformize(target_curve_copy[1:2], self.optim_timesteps)[0]
+            target_uni_3 = uniformize(target_curve_copy[2:3], self.optim_timesteps)[0]
 
-            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.optim_timesteps), target_uni, )
-            transformed_curve = apply_transforms(target_uni[None], tr, sc, -an)[0]
+            tr, sc, an = find_transforms(uniformize(target_curve_[None], self.optim_timesteps), target_uni_1, )
+            transformed_curve = apply_transforms(target_uni_1[None], tr, sc, -an)[0]
             end_point = target_curve_[size - 1]
             matched_point_idx = jax.numpy.argmin(jax.numpy.linalg.norm(transformed_curve - end_point, axis=-1))
 
@@ -1557,17 +1557,25 @@ class PathSynthesis:
             original_match = jax.numpy.copy(best_matches)
             best_matches = uniformize(best_matches, self.optim_timesteps)
 
-            tr, sc, an = find_transforms(best_matches, target_uni, )
-            tiled_curves = uniformize(target_uni[:matched_point_idx][None], self.optim_timesteps)
-            tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
-            transformed_curve = tiled_curves[0]
+            tr, sc, an = find_transforms(best_matches, target_uni_1, )
+            tiled_curves_1 = uniformize(target_uni_1[:matched_point_idx][None], self.optim_timesteps)
+            tiled_curves_1 = apply_transforms(tiled_curves_1, tr, sc, -an)
+            transformed_curve_1 = tiled_curves_1[0]
 
-            best_matches = get_partial_matches(best_matches, tiled_curves[0], )
+            tiled_curves_2 = uniformize(target_uni_2[None], self.optim_timesteps)
+            tiled_curves_2 = apply_transforms(tiled_curves_2, tr, sc, -an)
+            transformed_curve_2 = tiled_curves_2[0]
 
-            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
-            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+            tiled_curves_3 = uniformize(target_uni_3[None], self.optim_timesteps)
+            tiled_curves_3 = apply_transforms(tiled_curves_3, tr, sc, -an)
+            transformed_curve_3 = tiled_curves_3[0]
 
-            st_id, en_id = get_partial_index(original_match, tiled_curves[0], )
+            best_matches = get_partial_matches(best_matches, tiled_curves_1[0], )
+
+            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves_1 / sc[:, None, None])
+            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves_1 / sc[:, None, None])
+
+            st_id, en_id = get_partial_index(original_match, tiled_curves_1[0], )
 
             st_theta = np.linspace(0, 2 * np.pi, self.optim_timesteps)[st_id].squeeze()
             en_theta = np.linspace(0, 2 * np.pi, self.optim_timesteps)[en_id].squeeze()
@@ -1581,15 +1589,23 @@ class PathSynthesis:
             tid = (As[best_idx:best_idx + 1].sum(-1) > 0).sum(-1) - 1
             best_matches = sol[np.arange(sol.shape[0]), tid]
             best_matches = uniformize(best_matches, self.optim_timesteps)
-            target_uni = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
+            target_uni_1 = uniformize(target_curve_copy[0:1], self.optim_timesteps)[0]
 
-            tr, sc, an = find_transforms(best_matches, target_uni, )
-            tiled_curves = uniformize(target_curve_copy[0:1], self.optim_timesteps)
-            tiled_curves = apply_transforms(tiled_curves, tr, sc, -an)
-            transformed_curve = tiled_curves[0]
+            tr, sc, an = find_transforms(best_matches, target_uni_1, )
+            tiled_curves_1 = uniformize(target_curve_copy[0:1], self.optim_timesteps)
+            tiled_curves_1 = apply_transforms(tiled_curves_1, tr, sc, -an)
+            transformed_curve_1 = tiled_curves_1[0]
 
-            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
-            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves / sc[:, None, None])
+            tiled_curves_2 = uniformize(target_curve_copy[1:2], self.optim_timesteps)
+            tiled_curves_2 = apply_transforms(tiled_curves_2, tr, sc, -an)
+            transformed_curve_2 = tiled_curves_2[0]
+
+            tiled_curves_3 = uniformize(target_curve_copy[2:3], self.optim_timesteps)
+            tiled_curves_3 = apply_transforms(tiled_curves_3, tr, sc, -an)
+            transformed_curve_3 = tiled_curves_3[0]
+
+            CD = batch_chamfer_distance(best_matches / sc[:, None, None], tiled_curves_1 / sc[:, None, None])
+            OD = ordered_objective_batch(best_matches / sc[:, None, None], tiled_curves_1 / sc[:, None, None])
 
             st_theta = 0.
             en_theta = np.pi * 2
@@ -1599,7 +1615,9 @@ class PathSynthesis:
         ax = draw_mechanism(As[best_idx][:n_joints, :][:, :n_joints], x[best_idx][0:n_joints],
                             np.where(node_types[best_idx][0:n_joints])[0], [0, 1], highlight=tid[0].item(), solve=True,
                             thetas=np.linspace(st_theta, en_theta, self.optim_timesteps), ax=ax)
-        ax.plot(transformed_curve[:, 0], transformed_curve[:, 1], color="indigo", alpha=0.7, linewidth=2)
+        ax.plot(transformed_curve_1[:, 0], transformed_curve_1[:, 1], color="indigo", alpha=0.7, linewidth=2)
+        ax.plot(transformed_curve_2[:, 0], transformed_curve_2[:, 1], color="indigo", alpha=0.7, linewidth=2)
+        ax.plot(transformed_curve_3[:, 0], transformed_curve_3[:, 1], color="indigo", alpha=0.7, linewidth=2)
 
         A = As[best_idx]
         x = x[best_idx]
@@ -1617,7 +1635,7 @@ class PathSynthesis:
         performance = [CD.item() * og_scale, OD.item() * (og_scale ** 2), og_scale]
         torch.cuda.empty_cache()
         return fig, [[A, x, node_types, start_theta, end_theta, transformation], performance,
-                     transformed_curve], gr.update(value={"Progress": 1.0})
+                     transformed_curve_1], gr.update(value={"Progress": 1.0})
 
 
 # 用于处理部分曲线匹配，找到曲线的起始和结束点的索引，并生成匹配的曲线部分。
